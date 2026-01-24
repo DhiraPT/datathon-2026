@@ -66,11 +66,6 @@ def load_data():
     df['duration_sec'] = (df['submit_time'] - df['start_time']).dt.total_seconds()
     df['is_mobile'] = df['user_agent'].str.contains('Mobile|Android|iPhone', case=False, na=False).astype(int)
 
-    # Fill missing values for categorical columns used in filters and charts
-    for col in ['school', 'qualification', 'year', 'status', 'subject']:
-        if col in df.columns:
-            df[col] = df[col].fillna('Unknown')
-
     return df
 
 df = load_data()
@@ -82,26 +77,14 @@ if df is None:
 # ---------------------------------------------------------
 # FILTER STATE INITIALIZATION
 # ---------------------------------------------------------
-all_schools = sorted(df['school'].unique()) if 'school' in df.columns else []
-all_years = sorted(df['year'].unique(), key=str) if 'year' in df.columns else []
-all_qualifications = sorted(df['qualification'].unique()) if 'qualification' in df.columns else []
-all_statuses = sorted(df['status'].unique()) if 'status' in df.columns else []
-all_mobile = sorted(df['is_mobile'].dropna().unique()) if 'is_mobile' in df.columns else []
+all_schools = sorted(df['school'].dropna().unique()) if 'school' in df.columns else []
+all_years = sorted(df['year'].dropna().unique()) if 'year' in df.columns else []
 
 if 'school_selector' not in st.session_state:
-    st.session_state.school_selector = [x for x in all_schools if x != 'Unknown']
+    st.session_state.school_selector = all_schools
 
 if 'year_selector' not in st.session_state:
-    st.session_state.year_selector = [x for x in all_years if x != 'Unknown']
-
-if 'qualification_selector' not in st.session_state:
-    st.session_state.qualification_selector = [x for x in all_qualifications if x != 'Unknown']
-
-if 'status_selector' not in st.session_state:
-    st.session_state.status_selector = [x for x in all_statuses if x != 'Unknown']
-
-if 'mobile_selector' not in st.session_state:
-    st.session_state.mobile_selector = all_mobile
+    st.session_state.year_selector = all_years
 
 def close_chat():
     st.session_state.chat_open = False
@@ -111,34 +94,22 @@ def on_filter_change():
     st.session_state.insights = {}
 
 def reset_schools():
-    st.session_state.school_selector = [x for x in all_schools if x != 'Unknown']
+    st.session_state.school_selector = all_schools
     on_filter_change()
 
 def reset_years():
-    st.session_state.year_selector = [x for x in all_years if x != 'Unknown']
-    on_filter_change()
-
-def reset_qualifications():
-    st.session_state.qualification_selector = [x for x in all_qualifications if x != 'Unknown']
-    on_filter_change()
-
-def reset_statuses():
-    st.session_state.status_selector = [x for x in all_statuses if x != 'Unknown']
-    on_filter_change()
-
-def reset_mobile():
-    st.session_state.mobile_selector = all_mobile
+    st.session_state.year_selector = all_years
     on_filter_change()
 
 # ---------------------------------------------------------
 # SIDEBAR
 # ---------------------------------------------------------
+st.sidebar.title("🔍 Filters")
+
 if st.sidebar.button("✨ Generate Insights"):
     gen_insights = True
 else:
     gen_insights = False
-
-st.sidebar.title("🔍 Filters")
 
 # --- FILTER 1: school ---
 st.sidebar.subheader("Higher Education School")
@@ -153,26 +124,11 @@ selected_schools = st.sidebar.multiselect(
 st.sidebar.caption(f"{len(selected_schools)} of {len(all_schools)} selected")
 
 # Reset Button
-st.sidebar.button("Reset Schools", on_click=reset_schools)
+st.sidebar.button("Select All schools", on_click=reset_schools)
 
 st.sidebar.divider()
 
-# --- FILTER 2: Qualification ---
-st.sidebar.subheader("Qualification")
-
-selected_qualifications = st.sidebar.multiselect(
-    "Select qualifications:",
-    options=all_qualifications,
-    key='qualification_selector',
-    on_change=on_filter_change
-)
-st.sidebar.caption(f"{len(selected_qualifications)} of {len(all_qualifications)} selected")
-
-st.sidebar.button("Reset Qualifications", on_click=reset_qualifications)
-
-st.sidebar.divider()
-
-# --- FILTER 3: Year of Study ---
+# --- FILTER 2: YEAR ---
 st.sidebar.subheader("Year of Study")
 
 # Multiselect Widget
@@ -185,53 +141,15 @@ selected_years = st.sidebar.multiselect(
 st.sidebar.caption(f"{len(selected_years)} of {len(all_years)} selected")
 
 # Reset Button
-st.sidebar.button("Reset Years", on_click=reset_years)
-
-st.sidebar.divider()
-
-# --- FILTER 4: Status ---
-st.sidebar.subheader("Status")
-
-selected_statuses = st.sidebar.multiselect(
-    "Select status:",
-    options=all_statuses,
-    key='status_selector',
-    on_change=on_filter_change
-)
-st.sidebar.caption(f"{len(selected_statuses)} of {len(all_statuses)} selected")
-
-st.sidebar.button("Reset Statuses", on_click=reset_statuses)
-
-st.sidebar.divider()
-
-# --- FILTER 5: is_mobile ---
-st.sidebar.subheader("Device")
-
-mobile_labels = {0: "Non Mobile", 1: "Mobile"}
-selected_mobile = st.sidebar.multiselect(
-    "Select device:",
-    options=all_mobile,
-    format_func=lambda x: mobile_labels.get(x, str(x)),
-    key='mobile_selector',
-    on_change=on_filter_change
-)
-st.sidebar.caption(f"{len(selected_mobile)} of {len(all_mobile)} selected")
-
-st.sidebar.button("Select All Devices", on_click=reset_mobile)
+st.sidebar.button("Select All Years", on_click=reset_years)
 
 # --- APPLY FILTERS ---
 mask = pd.Series([True] * len(df))
 
 if 'school' in df.columns:
     mask &= df['school'].isin(selected_schools)
-if 'qualification' in df.columns:
-    mask &= df['qualification'].isin(selected_qualifications)
 if 'year' in df.columns:
     mask &= df['year'].isin(selected_years)
-if 'status' in df.columns:
-    mask &= df['status'].isin(selected_statuses)
-if 'is_mobile' in df.columns:
-    mask &= df['is_mobile'].isin(selected_mobile)
 
 filtered_df = df[mask]
 
@@ -252,23 +170,69 @@ def build_analyst_agent(df):
     )
 
     SYSTEM_PROMPT = """
-You are a data analyst.
+You are a senior data analyst working on a student survey analytics platform (GradSingapore).
 
-You are given a pandas DataFrame called `df`.
+You are given a pandas DataFrame named `df` that contains survey responses.
+The DataFrame has already been cleaned and uses the following column names:
 
-You MUST output valid Python code only.
+Core metadata:
+- id: unique response ID
+- start_time: survey start timestamp
+- submit_time: survey submission timestamp
+- status: survey completion status (Complete, Partial, Disqualified)
+- duration_sec: total time spent on survey in seconds
+- user_agent: browser / device string
+- is_mobile: 1 if mobile device, 0 otherwise
+- country: respondent country
 
-Rules:
+Demographics:
+- school: higher education institution
+- year: current year of study
+- qualification: expected highest qualification
+- subject: main field of study
+- nationality: respondent nationality
+- gender: respondent gender
+
+Employer perception & preferences:
+- perception: overall perception of the organisation as an employer
+- attractiveness: employer attractiveness score (1–10)
+- motivation: main factor motivating application
+- motivation_other: free-text motivation (if selected)
+
+Information interests (binary via non-null):
+- info_roles: interest in types of roles
+- info_career: interest in career progression
+- info_comp: interest in compensation & benefits
+- info_culture: interest in work-life balance & culture
+- info_process: interest in application & interview process
+- info_other_text: free-text “other” information interest
+
+Your task:
+- Answer the user’s question by analyzing `df`
+- Perform calculations, aggregations, or visualizations as needed
+- Focus on survey quality, engagement, drop-offs, segmentation, and employer attractiveness
+- Prefer rates, distributions, comparisons, and patterns over raw counts
+- Be precise and business-relevant
+
+STRICT OUTPUT RULES (VERY IMPORTANT):
+- Output ONLY valid Python code
 - Do NOT include explanations outside code
 - Do NOT use markdown
-- Do NOT print anything
-- You may inspect df using df.head() or df.describe()
+- Do NOT print anything to stdout
+- You may inspect data using df.head(), df.describe(), df.info()
 - If you generate a plot:
-    - call plt.clf()
-    - save it to 'temp_plot.png'
+    - call plt.clf() before plotting
+    - save the figure to 'temp_plot.png'
     - do NOT call plt.show()
-- Store your final explanation for the user in:
-    final_answer = "<your explanation here>"
+- Store the final natural-language explanation for the user in:
+    final_answer = "<clear, concise explanation in plain English>"
+
+ASSUME:
+- df already reflects the current UI filters
+- Missing values may exist
+- status values are exactly: Complete, Partial, Disqualified
+
+Think step by step, then write clean, correct Python.
 """
 
     return llm, SYSTEM_PROMPT
@@ -468,16 +432,17 @@ with tab_quality:
 
     # Metrics Row
     m1, m2, m3 = st.columns(3)
+
     if 'status' in filtered_df.columns:
-        comp_rate = (filtered_df['status'] == 'Complete').mean() * 100
-        disq_count = len(filtered_df[filtered_df['status'] == 'Disqualified'])
+        partial_rate = (filtered_df['status'] == 'Partial').mean() * 100
     else:
-        comp_rate, disq_count = 0, 0
+        partial_rate = 0
+
     avg_dur = filtered_df['duration_sec'].median()
 
-    m1.metric("Completion Rate", f"{comp_rate:.1f}%")
+    m1.metric("Partial Response Rate", f"{partial_rate:.1f}%")
     m2.metric("Median Duration", f"{avg_dur:.0f}s")
-    m3.metric("Disqualified", f"{disq_count}")
+    m3.metric("Total Responses", f"{len(filtered_df)}")
 
     st.divider()
 
