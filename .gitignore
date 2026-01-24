@@ -1,0 +1,17 @@
+# Python Virtual Environment
+venv/
+
+# Python bytecode
+__pycache__/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# MyPy cache
+.mypy_cache/
+
+# Streamlit secrets
+.streamlit/
+
+# OS generated files
+.DS_Store
