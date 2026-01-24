@@ -131,6 +131,24 @@ status_colors = {
     'Partial': '#FF9800'        # Vibrant Orange
 }
 
+# Pie chart: Partial vs Non-Partial ratio
+partial_count = (df['status'] == 'Partial').sum()
+non_partial_count = len(df) - partial_count
+
+plt.figure(figsize=(6, 6))
+plt.pie(
+    [partial_count, non_partial_count],
+    labels=['Partial', 'Non-Partial'],
+    autopct='%1.1f%%',
+    startangle=90,
+    colors=[status_colors['Partial'], '#BDBDBD'],
+    explode=[0.08, 0],
+    textprops={'fontsize': 11}
+)
+plt.title('Survey Status: Partial Response Ratio', fontsize=14, pad=16)
+plt.axis('equal')
+plt.show()
+
 # 1. Feature Selection
 analysis_vars = ['year', 'qualification', 'gender', 'nationality', 'is_mobile']
 
@@ -250,5 +268,4 @@ for i, status in enumerate(['Complete', 'Partial', 'Disqualified']):
 sns.despine()
 plt.tight_layout()
 plt.show()
-
 
