@@ -66,6 +66,11 @@ def load_data():
     df['duration_sec'] = (df['submit_time'] - df['start_time']).dt.total_seconds()
     df['is_mobile'] = df['user_agent'].str.contains('Mobile|Android|iPhone', case=False, na=False).astype(int)
 
+    # Fill missing values for categorical columns used in filters and charts
+    for col in ['school', 'qualification', 'year', 'status', 'subject']:
+        if col in df.columns:
+            df[col] = df[col].fillna('Unknown')
+
     return df
 
 df = load_data()
@@ -77,14 +82,26 @@ if df is None:
 # ---------------------------------------------------------
 # FILTER STATE INITIALIZATION
 # ---------------------------------------------------------
-all_schools = sorted(df['school'].dropna().unique()) if 'school' in df.columns else []
-all_years = sorted(df['year'].dropna().unique()) if 'year' in df.columns else []
+all_schools = sorted(df['school'].unique()) if 'school' in df.columns else []
+all_years = sorted(df['year'].unique(), key=str) if 'year' in df.columns else []
+all_qualifications = sorted(df['qualification'].unique()) if 'qualification' in df.columns else []
+all_statuses = sorted(df['status'].unique()) if 'status' in df.columns else []
+all_mobile = sorted(df['is_mobile'].dropna().unique()) if 'is_mobile' in df.columns else []
 
 if 'school_selector' not in st.session_state:
-    st.session_state.school_selector = all_schools
+    st.session_state.school_selector = [x for x in all_schools if x != 'Unknown']
 
 if 'year_selector' not in st.session_state:
-    st.session_state.year_selector = all_years
+    st.session_state.year_selector = [x for x in all_years if x != 'Unknown']
+
+if 'qualification_selector' not in st.session_state:
+    st.session_state.qualification_selector = [x for x in all_qualifications if x != 'Unknown']
+
+if 'status_selector' not in st.session_state:
+    st.session_state.status_selector = [x for x in all_statuses if x != 'Unknown']
+
+if 'mobile_selector' not in st.session_state:
+    st.session_state.mobile_selector = all_mobile
 
 def close_chat():
     st.session_state.chat_open = False
@@ -94,22 +111,34 @@ def on_filter_change():
     st.session_state.insights = {}
 
 def reset_schools():
-    st.session_state.school_selector = all_schools
+    st.session_state.school_selector = [x for x in all_schools if x != 'Unknown']
     on_filter_change()
 
 def reset_years():
-    st.session_state.year_selector = all_years
+    st.session_state.year_selector = [x for x in all_years if x != 'Unknown']
+    on_filter_change()
+
+def reset_qualifications():
+    st.session_state.qualification_selector = [x for x in all_qualifications if x != 'Unknown']
+    on_filter_change()
+
+def reset_statuses():
+    st.session_state.status_selector = [x for x in all_statuses if x != 'Unknown']
+    on_filter_change()
+
+def reset_mobile():
+    st.session_state.mobile_selector = all_mobile
     on_filter_change()
 
 # ---------------------------------------------------------
 # SIDEBAR
 # ---------------------------------------------------------
-st.sidebar.title("🔍 Filters")
-
 if st.sidebar.button("✨ Generate Insights"):
     gen_insights = True
 else:
     gen_insights = False
+
+st.sidebar.title("🔍 Filters")
 
 # --- FILTER 1: school ---
 st.sidebar.subheader("Higher Education School")
@@ -124,11 +153,26 @@ selected_schools = st.sidebar.multiselect(
 st.sidebar.caption(f"{len(selected_schools)} of {len(all_schools)} selected")
 
 # Reset Button
-st.sidebar.button("Select All schools", on_click=reset_schools)
+st.sidebar.button("Reset Schools", on_click=reset_schools)
 
 st.sidebar.divider()
 
-# --- FILTER 2: YEAR ---
+# --- FILTER 2: Qualification ---
+st.sidebar.subheader("Qualification")
+
+selected_qualifications = st.sidebar.multiselect(
+    "Select qualifications:",
+    options=all_qualifications,
+    key='qualification_selector',
+    on_change=on_filter_change
+)
+st.sidebar.caption(f"{len(selected_qualifications)} of {len(all_qualifications)} selected")
+
+st.sidebar.button("Reset Qualifications", on_click=reset_qualifications)
+
+st.sidebar.divider()
+
+# --- FILTER 3: Year of Study ---
 st.sidebar.subheader("Year of Study")
 
 # Multiselect Widget
@@ -141,15 +185,53 @@ selected_years = st.sidebar.multiselect(
 st.sidebar.caption(f"{len(selected_years)} of {len(all_years)} selected")
 
 # Reset Button
-st.sidebar.button("Select All Years", on_click=reset_years)
+st.sidebar.button("Reset Years", on_click=reset_years)
+
+st.sidebar.divider()
+
+# --- FILTER 4: Status ---
+st.sidebar.subheader("Status")
+
+selected_statuses = st.sidebar.multiselect(
+    "Select status:",
+    options=all_statuses,
+    key='status_selector',
+    on_change=on_filter_change
+)
+st.sidebar.caption(f"{len(selected_statuses)} of {len(all_statuses)} selected")
+
+st.sidebar.button("Reset Statuses", on_click=reset_statuses)
+
+st.sidebar.divider()
+
+# --- FILTER 5: is_mobile ---
+st.sidebar.subheader("Device")
+
+mobile_labels = {0: "Non Mobile", 1: "Mobile"}
+selected_mobile = st.sidebar.multiselect(
+    "Select device:",
+    options=all_mobile,
+    format_func=lambda x: mobile_labels.get(x, str(x)),
+    key='mobile_selector',
+    on_change=on_filter_change
+)
+st.sidebar.caption(f"{len(selected_mobile)} of {len(all_mobile)} selected")
+
+st.sidebar.button("Select All Devices", on_click=reset_mobile)
 
 # --- APPLY FILTERS ---
 mask = pd.Series([True] * len(df))
 
 if 'school' in df.columns:
     mask &= df['school'].isin(selected_schools)
+if 'qualification' in df.columns:
+    mask &= df['qualification'].isin(selected_qualifications)
 if 'year' in df.columns:
     mask &= df['year'].isin(selected_years)
+if 'status' in df.columns:
+    mask &= df['status'].isin(selected_statuses)
+if 'is_mobile' in df.columns:
+    mask &= df['is_mobile'].isin(selected_mobile)
 
 filtered_df = df[mask]
 
