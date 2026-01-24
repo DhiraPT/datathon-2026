@@ -152,6 +152,7 @@ def get_ai_response(prompt, df):
             model=st.secrets.get("MODEL_NAME", "glm-4.7"),
             openai_api_key=st.secrets.get("OPENAI_API_KEY", "your-api-key"),
             openai_api_base=st.secrets.get("OPENAI_API_BASE", "https://api.z.ai/api/paas/v4/"),
+            stop=["Observation:", "Observ"]
         )
     llm = st.session_state.pandas_llm
 
@@ -162,9 +163,11 @@ def get_ai_response(prompt, df):
 
     # Instruct the agent to save plots
     enhanced_prompt = (
-        f"{prompt} "
+        "IMPORTANT: Do not include the word 'Observation' or 'Observ' inside the python code block. "
+        "Use df.head() or df.dtypes to inspect data instead of df.info(). "
         f"If you create a plot, save it as '{plot_filename}' using matplotlib.pyplot.savefig('{plot_filename}'). "
-        "Do not use plt.show()."
+        "Do not use plt.show(). \n"
+        f"Question: {prompt}"
     )
 
     agent = create_pandas_dataframe_agent(
