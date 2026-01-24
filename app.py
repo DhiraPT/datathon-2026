@@ -3,8 +3,6 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 from langchain_openai import ChatOpenAI
-from langchain_experimental.agents import create_pandas_dataframe_agent
-import tabulate
 import os
 import uuid
 
@@ -144,62 +142,78 @@ st.sidebar.metric("Total Responses", f"{len(df)}")
 # ---------------------------------------------------------
 # AI LOGIC
 # ---------------------------------------------------------
-def get_ai_response(prompt, df):
-    # Cache LLM creation
-    if "pandas_llm" not in st.session_state:
-        st.session_state.pandas_llm = ChatOpenAI(
-            temperature=0,
-            model=st.secrets.get("MODEL_NAME", "glm-4.7"),
-            openai_api_key=st.secrets.get("OPENAI_API_KEY", "your-api-key"),
-            openai_api_base=st.secrets.get("OPENAI_API_BASE", "https://api.z.ai/api/paas/v4/"),
-            stop=["Observation:", "Observ"]
-        )
-    llm = st.session_state.pandas_llm
-
-    # Define a temporary plot filename
-    plot_filename = "temp_plot.png"
-    if os.path.exists(plot_filename):
-        os.remove(plot_filename)
-
-    # Instruct the agent to save plots
-    enhanced_prompt = (
-        "IMPORTANT: Do not include the word 'Observation' or 'Observ' inside the python code block. "
-        "Use df.head() or df.dtypes to inspect data instead of df.info(). "
-        f"If you create a plot, save it as '{plot_filename}' using matplotlib.pyplot.savefig('{plot_filename}'). "
-        "Do not use plt.show(). \n"
-        f"Question: {prompt}"
+def build_analyst_agent(df):
+    llm = ChatOpenAI(
+        temperature=0,
+        model=st.secrets.get("MODEL_NAME", "glm-4.7"),
+        openai_api_key=st.secrets.get("OPENAI_API_KEY", "your-api-key"),
+        openai_api_base=st.secrets.get("OPENAI_API_BASE", "https://api.z.ai/api/paas/v4/"),
     )
 
-    agent = create_pandas_dataframe_agent(
-        llm,
-        df,
-        verbose=True,
-        allow_dangerous_code=True,
-        agent_executor_kwargs={"handle_parsing_errors": True},
-        return_intermediate_steps=True
-    )
+    SYSTEM_PROMPT = """
+You are a data analyst.
+
+You are given a pandas DataFrame called `df`.
+
+You MUST output valid Python code only.
+
+Rules:
+- Do NOT include explanations outside code
+- Do NOT use markdown
+- Do NOT print anything
+- You may inspect df using df.head() or df.describe()
+- If you generate a plot:
+    - call plt.clf()
+    - save it to 'temp_plot.png'
+    - do NOT call plt.show()
+- Store your final explanation for the user in:
+    final_answer = "<your explanation here>"
+"""
+
+    return llm, SYSTEM_PROMPT
+
+def run_analyst_agent(user_question, df):
+    llm, system_prompt = build_analyst_agent(df)
+
+    prompt = f"""
+{system_prompt}
+
+User question:
+{user_question}
+"""
+
     try:
-        response = agent.invoke({"input": enhanced_prompt})
-        output_text = response['output']
+        response = llm.invoke(prompt)
+        code = response.content
 
-        # Extract code from intermediate steps
-        steps = response.get("intermediate_steps", [])
-        code_snippets = []
-        for action, observation in steps:
-            if hasattr(action, 'tool_input') and isinstance(action.tool_input, str):
-                code_snippets.append(action.tool_input)
-        final_code = "\n".join(code_snippets) if code_snippets else None
+        # Clean up code block markers if present
+        if code.startswith("```python"):
+            code = code.replace("```python", "").replace("```", "")
+        elif code.startswith("```"):
+            code = code.replace("```", "")
+        code = code.strip()
+
+        local_vars = {
+            "df": df.copy(),
+            "pd": pd,
+            "plt": plt,
+            "sns": sns,
+        }
+
+        exec(code, {}, local_vars)
+
+        final_answer = local_vars.get("final_answer", "Analysis completed.")
 
         # Check if a plot was generated and rename it to keep history
         image_path = None
-        if os.path.exists(plot_filename):
+        if os.path.exists("temp_plot.png"):
             unique_filename = f"chart_{uuid.uuid4().hex}.png"
-            os.rename(plot_filename, unique_filename)
+            os.rename("temp_plot.png", unique_filename)
             image_path = unique_filename
 
-        return output_text, final_code, image_path
+        return final_answer, code, image_path
     except Exception as e:
-        return f"Error: {str(e)}", str(e), None
+        return f"Error: {str(e)}", code if 'code' in locals() else "", None
 
 # ---------------------------------------------------------
 # CHAT MODAL
@@ -229,7 +243,7 @@ def show_chat_modal():
 
         # Get AI response
         with st.spinner("Analyzing data..."):
-            response, code, image_path = get_ai_response(prompt, filtered_df)
+            response, code, image_path = run_analyst_agent(prompt, filtered_df)
 
         # Add assistant response to chat history
         message_data = {"role": "assistant", "content": response, "code": code}
