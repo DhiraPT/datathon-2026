@@ -83,11 +83,16 @@ if 'school_selector' not in st.session_state:
 if 'year_selector' not in st.session_state:
     st.session_state.year_selector = all_years
 
+def close_chat():
+    st.session_state.chat_open = False
+
 def reset_schools():
     st.session_state.school_selector = all_schools
+    close_chat()
 
 def reset_years():
     st.session_state.year_selector = all_years
+    close_chat()
 
 # ---------------------------------------------------------
 # SIDEBAR
@@ -101,7 +106,8 @@ st.sidebar.subheader("Higher Education School")
 selected_schools = st.sidebar.multiselect(
     "Select schools:",
     options=all_schools,
-    key='school_selector'
+    key='school_selector',
+    on_change=close_chat
 )
 st.sidebar.caption(f"{len(selected_schools)} of {len(all_schools)} selected")
 
@@ -117,7 +123,8 @@ st.sidebar.subheader("Year of Study")
 selected_years = st.sidebar.multiselect(
     "Select years:",
     options=all_years,
-    key='year_selector'
+    key='year_selector',
+    on_change=close_chat
 )
 st.sidebar.caption(f"{len(selected_years)} of {len(all_years)} selected")
 
