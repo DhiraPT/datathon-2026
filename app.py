@@ -220,47 +220,53 @@ User question:
 # ---------------------------------------------------------
 @st.dialog("🤖 AI Assistant")
 def show_chat_modal():
+    # Create a container for chat history to ensure messages appear above the input
+    chat_container = st.container()
+
     # Display chat messages from history on app rerun
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.write(message["content"])
+    with chat_container:
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.write(message["content"])
 
-            if "image" in message and message["image"] and os.path.exists(message["image"]):
-                with open(message["image"], "rb") as f:
-                    st.image(f.read())
+                if "image" in message and message["image"] and os.path.exists(message["image"]):
+                    with open(message["image"], "rb") as f:
+                        st.image(f.read())
 
-            if "code" in message and message["code"]:
-                with st.expander("🛠️ View Generated Code"):
-                    st.code(message["code"], language="python")
+                if "code" in message and message["code"]:
+                    with st.expander("🛠️ View Generated Code"):
+                        st.code(message["code"], language="python")
 
     # Accept user input
     if prompt := st.chat_input("What would you like to know?"):
         # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
-        # Display user message in chat message container
-        with st.chat_message("user"):
-            st.markdown(prompt)
+        
+        # Display user message and spinner inside the chat container
+        with chat_container:
+            with st.chat_message("user"):
+                st.markdown(prompt)
 
-        # Get AI response
-        with st.spinner("Analyzing data..."):
-            response, code, image_path = run_analyst_agent(prompt, filtered_df)
+            # Get AI response
+            with st.spinner("Analyzing data..."):
+                response, code, image_path = run_analyst_agent(prompt, filtered_df)
 
-        # Add assistant response to chat history
-        message_data = {"role": "assistant", "content": response, "code": code}
-        if image_path:
-            message_data["image"] = image_path
-        st.session_state.messages.append(message_data)
-
-        # Display assistant response in chat message container
-        with st.chat_message("assistant"):
-            st.write(response)
+            # Add assistant response to chat history
+            message_data = {"role": "assistant", "content": response, "code": code}
             if image_path:
-                with open(image_path, "rb") as f:
-                    st.image(f.read())
+                message_data["image"] = image_path
+            st.session_state.messages.append(message_data)
 
-            if code:
-                with st.expander("🛠️ View Generated Code"):
-                    st.code(code, language="python")
+            # Display assistant response in chat message container
+            with st.chat_message("assistant"):
+                st.write(response)
+                if image_path:
+                    with open(image_path, "rb") as f:
+                        st.image(f.read())
+
+                if code:
+                    with st.expander("🛠️ View Generated Code"):
+                        st.code(code, language="python")
         st.rerun()
 
 # Floating Button CSS & Logic
@@ -339,7 +345,7 @@ with tab_quality:
     m1.metric("Completion Rate", f"{comp_rate:.1f}%")
     m2.metric("Median Duration", f"{avg_dur:.0f}s")
     m3.metric("Disqualified", f"{disq_count}")
-    
+
     st.divider()
 
     # Graphs Row (2 Columns)
