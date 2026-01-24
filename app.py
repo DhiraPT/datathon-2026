@@ -19,6 +19,9 @@ if "messages" not in st.session_state:
 if "chat_open" not in st.session_state:
     st.session_state.chat_open = False
 
+if "insights" not in st.session_state:
+    st.session_state.insights = {}
+
 # ---------------------------------------------------------
 # DATA LOADING & PREPROCESSING
 # ---------------------------------------------------------
@@ -86,18 +89,27 @@ if 'year_selector' not in st.session_state:
 def close_chat():
     st.session_state.chat_open = False
 
+def on_filter_change():
+    st.session_state.chat_open = False
+    st.session_state.insights = {}
+
 def reset_schools():
     st.session_state.school_selector = all_schools
-    close_chat()
+    on_filter_change()
 
 def reset_years():
     st.session_state.year_selector = all_years
-    close_chat()
+    on_filter_change()
 
 # ---------------------------------------------------------
 # SIDEBAR
 # ---------------------------------------------------------
 st.sidebar.title("🔍 Filters")
+
+if st.sidebar.button("✨ Generate Insights"):
+    gen_insights = True
+else:
+    gen_insights = False
 
 # --- FILTER 1: school ---
 st.sidebar.subheader("Higher Education School")
@@ -107,7 +119,7 @@ selected_schools = st.sidebar.multiselect(
     "Select schools:",
     options=all_schools,
     key='school_selector',
-    on_change=close_chat
+    on_change=on_filter_change
 )
 st.sidebar.caption(f"{len(selected_schools)} of {len(all_schools)} selected")
 
@@ -124,7 +136,7 @@ selected_years = st.sidebar.multiselect(
     "Select years:",
     options=all_years,
     key='year_selector',
-    on_change=close_chat
+    on_change=on_filter_change
 )
 st.sidebar.caption(f"{len(selected_years)} of {len(all_years)} selected")
 
@@ -221,6 +233,38 @@ User question:
         return final_answer, code, image_path
     except Exception as e:
         return f"Error: {str(e)}", code if 'code' in locals() else "", None
+
+if gen_insights:
+    if filtered_df.empty:
+        st.error("No data available to generate insights.")
+    else:
+        with st.spinner("Generating insights for all graphs..."):
+            llm, _ = build_analyst_agent(filtered_df)
+            
+            # Graph 1: Time vs Status
+            if 'status' in filtered_df.columns and 'duration_sec' in filtered_df.columns:
+                stats = filtered_df.groupby('status')['duration_sec'].describe().to_string()
+                prompt = f"Analyze survey duration by status. Data:\n{stats}\nProvide 2 short, bulleted insights."
+                st.session_state.insights['graph1'] = llm.invoke(prompt).content
+
+            # Graph 2: Year vs Qualification
+            if 'year' in filtered_df.columns and 'qualification' in filtered_df.columns:
+                ct = pd.crosstab(filtered_df['year'], filtered_df['qualification'])
+                if not ct.empty:
+                    prompt = f"Analyze Year vs Qualification. Data:\n{ct.to_string()}\nProvide 2 short, bulleted insights."
+                    st.session_state.insights['graph2'] = llm.invoke(prompt).content
+
+            # Graph 3: Attractiveness
+            if 'attractiveness' in filtered_df.columns:
+                stats = filtered_df['attractiveness'].describe().to_string()
+                prompt = f"Analyze attractiveness scores (1-10). Data:\n{stats}\nProvide 2 short, bulleted insights."
+                st.session_state.insights['graph3'] = llm.invoke(prompt).content
+
+            # Graph 4: Top Majors
+            if 'subject' in filtered_df.columns:
+                top = filtered_df['subject'].value_counts().head(10).to_string()
+                prompt = f"Analyze top majors. Data:\n{top}\nProvide 2 short, bulleted insights."
+                st.session_state.insights['graph4'] = llm.invoke(prompt).content
 
 # ---------------------------------------------------------
 # CHAT MODAL
@@ -372,6 +416,8 @@ with tab_quality:
             ax_boxen.set_xlabel("Seconds")
             sns.despine()
             st.pyplot(fig_boxen)
+            if 'graph1' in st.session_state.insights:
+                st.info(st.session_state.insights['graph1'])
 
     # Graph 2: Heatmap
     with col2:
@@ -382,6 +428,8 @@ with tab_quality:
             sns.heatmap(consistency_df, annot=True, fmt='d', cmap="Blues", ax=ax_heat, cbar=False)
             plt.xticks(rotation=45, ha='right')
             st.pyplot(fig_heat)
+            if 'graph2' in st.session_state.insights:
+                st.info(st.session_state.insights['graph2'])
 
 # --- TAB 2: SURVEY RESULTS ---
 with tab_results:
@@ -398,6 +446,8 @@ with tab_results:
             sns.histplot(data=filtered_df, x='attractiveness', bins=10, kde=True, color='#2E7D32', ax=ax_hist)
             ax_hist.set_xlim(1, 10)
             st.pyplot(fig_hist)
+            if 'graph3' in st.session_state.insights:
+                st.info(st.session_state.insights['graph3'])
 
     # Graph 4: Top Majors Bar Chart
     with col4:
@@ -408,3 +458,5 @@ with tab_results:
             sns.barplot(y=top_majors.index, x=top_majors.values, hue=top_majors.index, palette="viridis", ax=ax_bar, legend=False)
             ax_bar.set_xlabel("Count")
             st.pyplot(fig_bar)
+            if 'graph4' in st.session_state.insights:
+                st.info(st.session_state.insights['graph4'])
