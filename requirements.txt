@@ -1,0 +1,10 @@
+seaborn
+scikit-learn
+streamlit
+pandas
+matplotlib
+openpyxl
+langchain
+langchain-openai
+langchain-experimental
+tabulate
