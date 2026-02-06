@@ -4,19 +4,74 @@ GradSingapore Survey Analytics Dashboard
 A professional Streamlit dashboard for analyzing student survey data.
 """
 
-import streamlit as st
-import pandas as pd
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
-from langchain_openai import ChatOpenAI
+# =============================================================================
+# IMPORTS
+# =============================================================================
+
+# Standard Library
 import os
-import uuid
 import time
+import uuid
+from typing import Any
+
+# Third-Party Imports
+import joblib
 import numpy as np
-from sklearn.cluster import KMeans
+import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import plotly.graph_objects as go
+import plotly.express as px
+from langchain_openai import ChatOpenAI
+from sklearn.cluster import KMeans
+import streamlit as st
+
+
+# =============================================================================
+# CONSTANTS & CONFIGURATION
+# =============================================================================
+
+# Clustering Configuration
+N_CLUSTERS = 3
+RANDOM_STATE = 42
+N_INIT = 10
+
+# File Paths
+DATA_FILE_PATH = "Category B Dataset/sds_datathon_gradsingapore.xlsx"
+ML_MODEL_PATH = "partial_response_model.pkl"
+LABEL_ENCODERS_PATH = "partial_response_label_encoders.pkl"
+FEATURES_PATH = "partial_response_feature_list.pkl"
+
+# Visualization Defaults
+DEFAULT_CHART_HEIGHT = 450
+DEFAULT_COLORSCALE = "RdYlGn"
+
+# Insight Generation
+DEFAULT_INSIGHTS_TOP_N = 5
+
+# Data Validation
+REQUIRED_COLUMNS = [
+    'id', 'start_time', 'submit_time', 'status', 'user_agent',
+    'school', 'year', 'qualification', 'subject', 'nationality',
+    'gender', 'perception', 'info_roles', 'info_career', 'info_comp',
+    'info_culture', 'info_process', 'attractiveness', 'motivation'
+]
+
+INFO_COLUMNS = ['info_roles', 'info_career', 'info_comp', 'info_culture', 'info_process']
+
+SURVEY_QUESTIONS = [
+    'school', 'year', 'qualification', 'subject', 'nationality',
+    'gender', 'perception', 'info_roles', 'info_career', 'info_comp',
+    'info_culture', 'info_process', 'info_other_text', 'attractiveness',
+    'motivation', 'motivation_other'
+]
+
+# Status Colors
+STATUS_COLORS = {
+    'Complete': '#2E7D32',
+    'Partial': '#FF9800',
+    'Disqualified': '#D32F2F'
+}
 
 
 # =============================================================================
@@ -326,11 +381,13 @@ COLUMN_RENAME_MAP = {
 
 @st.cache_data
 def load_data() -> pd.DataFrame | None:
-    """Load and preprocess survey data."""
-    file_path = "Category B Dataset/sds_datathon_gradsingapore.xlsx"
+    """Load and preprocess survey data from Excel file.
     
+    Returns:
+        pd.DataFrame | None: Loaded and preprocessed dataframe, or None if file not found.
+    """
     try:
-        df = pd.read_excel(file_path)
+        df = pd.read_excel(DATA_FILE_PATH)
     except FileNotFoundError:
         return None
 
@@ -343,6 +400,45 @@ def load_data() -> pd.DataFrame | None:
     df['is_mobile'] = df['user_agent'].str.contains('Mobile|Android|iPhone', case=False, na=False).astype(int)
 
     return df
+
+
+def validate_dataframe(df: pd.DataFrame) -> bool:
+    """Validate that dataframe has all required columns.
+    
+    Args:
+        df: The dataframe to validate.
+        
+    Returns:
+        bool: True if all required columns are present.
+    """
+    missing = [col for col in REQUIRED_COLUMNS if col not in df.columns]
+    if missing:
+        st.error(f"Missing required columns: {', '.join(missing)}")
+        return False
+    return True
+
+
+# =============================================================================
+# ML MODEL CACHING (Cached Resource)
+# =============================================================================
+
+@st.cache_resource
+def load_ml_model() -> tuple[Any, dict, list] | None:
+    """Load ML model, label encoders, and feature list with caching.
+    
+    Returns:
+        tuple[model, encoders, features] | None: Cached model resources or None if unavailable.
+    """
+    if not all(os.path.exists(p) for p in [ML_MODEL_PATH, LABEL_ENCODERS_PATH, FEATURES_PATH]):
+        return None
+    
+    try:
+        model = joblib.load(ML_MODEL_PATH)
+        encoders = joblib.load(LABEL_ENCODERS_PATH)
+        features = joblib.load(FEATURES_PATH)
+        return model, encoders, features
+    except Exception:
+        return None
 
 
 # =============================================================================
@@ -759,23 +855,23 @@ def chart_question_correlation_heatmap(filtered_df: pd.DataFrame):
     st.plotly_chart(fig, width='stretch')
 
 
-def chart_partial_prediction_model(filtered_df: pd.DataFrame):
-    """Factors Driving Partial Survey Responses - Feature Importance"""
-    model_path = 'partial_response_model.pkl'
-    encoders_path = 'partial_response_label_encoders.pkl'
-    features_path = 'partial_response_feature_list.pkl'
+def chart_partial_prediction_model(filtered_df: pd.DataFrame) -> None:
+    """Factors Driving Partial Survey Responses - Feature Importance.
     
-    if not (os.path.exists(model_path) and os.path.exists(encoders_path) and os.path.exists(features_path)):
-        st.markdown("<p style='text-align: center; color: #666;'>Model files not found</p>", unsafe_allow_html=True)
+    Args:
+        filtered_df: Filtered pandas DataFrame with survey response data.
+    """
+    cached = load_ml_model()
+    
+    if cached is None:
+        st.markdown(
+            "<p style='text-align: center; color: #666;'>Model files not found or unavailable</p>",
+            unsafe_allow_html=True
+        )
         return
     
     try:
-        import joblib
-        from sklearn.preprocessing import LabelEncoder
-        
-        rf = joblib.load(model_path)
-        label_encoders = joblib.load(encoders_path)
-        analysis_vars = joblib.load(features_path)
+        rf, label_encoders, analysis_vars = cached
         
         df_work = filtered_df.copy()
         if 'school' in df_work.columns and 'university' not in df_work.columns:
@@ -1306,23 +1402,31 @@ def chart_information_gap_analysis(filtered_df: pd.DataFrame):
         plot_information_gap_lollipop(filtered_df)
 
 
-def _get_maturity_data(filtered_df: pd.DataFrame):
-    """Helper function to prepare maturity shift data."""
+def _get_maturity_data(filtered_df: pd.DataFrame) -> pd.DataFrame | None:
+    """Helper function to prepare maturity shift data.
+    
+    Args:
+        filtered_df: Filtered pandas DataFrame with survey data.
+        
+    Returns:
+        pd.DataFrame | None: DataFrame with interest rates by year, or None if no data.
+    """
     maturity_data = filtered_df[(filtered_df['status'] == 'Complete') & 
                                  (filtered_df['year'].isin(['Year 1', 'Year 2', 'Year 3', 'Year 4']))].copy()
     
     if len(maturity_data) == 0:
-        return None, "No complete responses with year data"
+        return None
     
     year_interests = {}
     for year in ['Year 1', 'Year 2', 'Year 3', 'Year 4']:
         year_df = maturity_data[maturity_data['year'] == year]
+        year_len = len(year_df)
         year_interests[year] = {
-            'Culture': (year_df['info_culture'].notna().sum() / len(year_df)) * 100,
-            'Process': (year_df['info_process'].notna().sum() / len(year_df)) * 100,
-            'Career': (year_df['info_career'].notna().sum() / len(year_df)) * 100,
-            'Compensation': (year_df['info_comp'].notna().sum() / len(year_df)) * 100,
-            'Roles': (year_df['info_roles'].notna().sum() / len(year_df)) * 100,
+            'Culture': (year_df['info_culture'].notna().sum() / year_len * 100) if year_len > 0 else 0,
+            'Process': (year_df['info_process'].notna().sum() / year_len * 100) if year_len > 0 else 0,
+            'Career': (year_df['info_career'].notna().sum() / year_len * 100) if year_len > 0 else 0,
+            'Compensation': (year_df['info_comp'].notna().sum() / year_len * 100) if year_len > 0 else 0,
+            'Roles': (year_df['info_roles'].notna().sum() / year_len * 100) if year_len > 0 else 0,
         }
     
     year_interest_df = pd.DataFrame(year_interests).T
@@ -1505,8 +1609,7 @@ def show_chat_modal():
                 st.markdown(prompt)
             
             with st.chat_message("assistant"):
-                import time as tm
-                response_key = str(int(tm.time() * 1000))
+                response_key = str(int(time.time() * 1000))
                 
                 with st.spinner("Analyzing data..."):
                     response = st.write_stream(response_generator(prompt, filtered_df, response_key))
@@ -1539,15 +1642,22 @@ if df is None:
     st.error("Data file not found. Please ensure the Excel file is in the directory.")
     st.stop()
 
+# Validate dataframe has all required columns
+if not validate_dataframe(df):
+    st.stop()
+
+# Create working copy to avoid mutation of original df
+working_df = df.copy()
+
 # Get filter options (include Unknown for NaN values)
-all_schools = list(df['school'].fillna('Unknown').unique())
+all_schools = list(working_df['school'].fillna('Unknown').unique())
 all_schools = sorted([s for s in all_schools if pd.notna(s) or s == 'Unknown'])
-all_years = list(df['year'].fillna('Unknown').unique())
+all_years = list(working_df['year'].fillna('Unknown').unique())
 all_years = sorted([y for y in all_years if pd.notna(y) or y == 'Unknown'])
 
-# Replace 'Unknown' back to NaN in df for filtering
-df['school'] = df['school'].fillna('Unknown')
-df['year'] = df['year'].fillna('Unknown')
+# Fill NaN values in working_df for filtering
+working_df['school'] = working_df['school'].fillna('Unknown')
+working_df['year'] = working_df['year'].fillna('Unknown')
 
 # Initialize session state
 if 'school_selector' not in st.session_state:
@@ -1559,18 +1669,19 @@ if 'year_selector' not in st.session_state:
 gen_insights, selected_schools, selected_years = render_sidebar_filters()
 
 # Apply filters
-mask = pd.Series([True] * len(df))
-if 'school' in df.columns:
-    mask &= df['school'].isin(selected_schools)
-if 'year' in df.columns:
-    mask &= df['year'].isin(selected_years)
-filtered_df = df[mask]
+mask = pd.Series([True] * len(working_df))
+mask &= working_df['school'].isin(selected_schools)
+mask &= working_df['year'].isin(selected_years)
+filtered_df = working_df[mask]
 
 # Render sidebar metrics
-render_sidebar_metrics(len(df), len(filtered_df))
+render_sidebar_metrics(len(working_df), len(filtered_df))
 
 # Generate insights
 if gen_insights and not filtered_df.empty:
+    # Close chat modal if open
+    st.session_state.chat_open = False
+    
     with st.spinner("Generating insights for all graphs..."):
         llm, _ = build_analyst_agent(filtered_df)
         
@@ -1692,12 +1803,10 @@ Provide 3 actionable insights:
         
         # 4. Partial Response Drivers
         if 'status' in filtered_df.columns:
-            # Get model data if available
-            import os
-            if os.path.exists('partial_response_model.pkl'):
-                import joblib
-                rf = joblib.load('partial_response_model.pkl')
-                analysis_vars = joblib.load('partial_response_feature_list.pkl')
+            # Get model data if available (use cached loader)
+            cached = load_ml_model()
+            if cached is not None:
+                rf, _, analysis_vars = cached
                 
                 # Calculate partial rate by demographic
                 partial_rate_by_school = (filtered_df.groupby('school')['status'].apply(lambda x: (x == 'Partial').mean() * 100)).round(1).to_string()
@@ -2009,4 +2118,3 @@ with tab_results:
             st.markdown(st.session_state.insights["maturity"])
     else:
         st.info("💡 Click '✨ Generate Insights' in sidebar to see AI-generated insights")
-
