@@ -122,18 +122,19 @@ SAAS_CSS = """
     
     /* --- Insight Text (scrollable) --- */
     .insight-scroll {
-        font-size: 12px;
-        color: #6b7280;
-        font-style: italic;
+        font-size: 14px;
+        color: #374151;
         margin-top: 12px;
-        padding-top: 12px;
-        border-top: 1px solid #f3f4f6;
-        line-height: 1.5;
-        max-height: 120px;
+        padding: 16px;
+        border-top: 2px solid #e5e7eb;
+        line-height: 1.6;
+        max-height: 200px;
         overflow-y: auto;
-        background: #fafafa;
+        background: #f9fafb;
         border-radius: 8px;
-        padding: 12px;
+    }
+    .insight-scroll strong {
+        color: #2563eb;
     }
 
     /* --- Placeholder Card --- */
@@ -567,23 +568,18 @@ def render_metrics(filtered_df: pd.DataFrame):
     k4.metric("Avg Attractiveness", f"{avg_attract:.1f}")
 
 
-def render_chart_card(title: str, chart_function, insight_key: str = None):
+def render_chart_card(title: str, chart_function, insight_key: str = None, card_height: int = 800):
     """Helper to render a chart card with optional insight."""
-    # Use Streamlit native container with border for card effect
-    with st.container(border=True):
+    # Use Streamlit container with fixed height
+    with st.container(height=card_height):
         st.markdown(f"**{title}**")
         chart_function()
-        # Scrollable insights area with fixed height
+        # Scrollable insights using Streamlit expander
         if insight_key and insight_key in st.session_state.insights:
-            insight_text = st.session_state.insights[insight_key]
+            with st.expander("💡 View Insights", expanded=True):
+                st.markdown(st.session_state.insights[insight_key])
         else:
-            insight_text = "💡 Click '✨ Generate Insights' in sidebar to see AI-generated insights for this chart."
-        st.markdown(f"""
-        <div class="insight-scroll">
-            <strong>💡 Insight:</strong><br>
-            {insight_text}
-        </div>
-        """, unsafe_allow_html=True)
+            st.info("💡 Click '✨ Generate Insights' in sidebar to see AI-generated insights")
 
 
 # =============================================================================
@@ -1237,30 +1233,53 @@ if gen_insights and not filtered_df.empty:
     with st.spinner("Generating insights for all graphs..."):
         llm, _ = build_analyst_agent(filtered_df)
         
-        # Graph 1: Time vs Status
-        if 'status' in filtered_df.columns and 'duration_sec' in filtered_df.columns:
-            stats = filtered_df.groupby('status')['duration_sec'].describe().to_string()
-            prompt = f"Analyze survey duration by status. Data:\n{stats}\nProvide 2 short, bulleted insights."
-            st.session_state.insights['graph1'] = llm.invoke(prompt).content
+        # Status Distribution
+        if 'status' in filtered_df.columns:
+            status_counts = filtered_df['status'].value_counts().to_string()
+            prompt = f"Analyze survey status distribution. Data:\n{status_counts}\nProvide 2 short, bulleted insights."
+            st.session_state.insights['status'] = llm.invoke(prompt).content
         
-        # Graph 2: Year vs Qualification
-        if 'year' in filtered_df.columns and 'qualification' in filtered_df.columns:
-            ct = pd.crosstab(filtered_df['year'], filtered_df['qualification'])
-            if not ct.empty:
-                prompt = f"Analyze Year vs Qualification. Data:\n{ct.to_string()}\nProvide 2 short, bulleted insights."
-                st.session_state.insights['graph2'] = llm.invoke(prompt).content
+        # Drop-off Analysis
+        if 'status' in filtered_df.columns:
+            dropoff_count = (filtered_df['status'] == 'Partial').sum()
+            prompt = f"Analyze survey drop-offs. {dropoff_count} partial responses out of {len(filtered_df)}. Provide 2 short, bulleted insights."
+            st.session_state.insights['dropoff'] = llm.invoke(prompt).content
         
-        # Graph 3: Attractiveness
-        if 'attractiveness' in filtered_df.columns:
-            stats = filtered_df['attractiveness'].describe().to_string()
-            prompt = f"Analyze attractiveness scores (1-10). Data:\n{stats}\nProvide 2 short, bulleted insights."
-            st.session_state.insights['graph3'] = llm.invoke(prompt).content
+        # Question Correlation Heatmap
+        if all(col in filtered_df.columns for col in ['info_roles', 'info_career', 'info_comp', 'info_culture', 'info_process']):
+            info_binary = filtered_df[['info_roles', 'info_career', 'info_comp', 'info_culture', 'info_process']].notna().astype(int)
+            corr = info_binary.corr().to_string()
+            prompt = f"Analyze correlation between 'Learn More' question responses. Data:\n{corr}\nProvide 2 short, bulleted insights."
+            st.session_state.insights['correlation'] = llm.invoke(prompt).content
         
-        # Graph 4: Top Majors
-        if 'subject' in filtered_df.columns:
-            top = filtered_df['subject'].value_counts().head(10).to_string()
-            prompt = f"Analyze top majors. Data:\n{top}\nProvide 2 short, bulleted insights."
-            st.session_state.insights['graph4'] = llm.invoke(prompt).content
+        # Partial Response Drivers
+        if 'status' in filtered_df.columns:
+            partial_count = (filtered_df['status'] == 'Partial').sum()
+            prompt = f"Analyze factors driving partial survey responses. {partial_count} partial responses detected. Provide 2 short, bulleted insights."
+            st.session_state.insights['partial_drivers'] = llm.invoke(prompt).content
+        
+        # Interest-Based Personas
+        if 'subject' in filtered_df.columns and 'attractiveness' in filtered_df.columns:
+            subject_counts = filtered_df['subject'].value_counts().head(10).to_string()
+            prompt = f"Analyze respondent personas by subject/major. Data:\n{subject_counts}\nProvide 2 short, bulleted insights."
+            st.session_state.insights['personas'] = llm.invoke(prompt).content
+        
+        # Motivation Drivers
+        if 'motivation' in filtered_df.columns and 'attractiveness' in filtered_df.columns:
+            motivation_stats = filtered_df.groupby('motivation')['attractiveness'].agg(['mean', 'count']).to_string()
+            prompt = f"Analyze motivation factors driving high attractiveness. Data:\n{motivation_stats}\nProvide 2 short, bulleted insights."
+            st.session_state.insights['motivation'] = llm.invoke(prompt).content
+        
+        # Information Gap Analysis
+        if all(col in filtered_df.columns for col in ['info_roles', 'info_career', 'info_comp', 'info_culture', 'info_process']) and 'motivation' in filtered_df.columns:
+            prompt = f"Analyze information gap between what respondents want to learn vs what motivates them to apply. Provide 2 short, bulleted insights."
+            st.session_state.insights['gap_analysis'] = llm.invoke(prompt).content
+        
+        # Maturity Shift
+        if 'year' in filtered_df.columns:
+            year_counts = filtered_df['year'].value_counts().to_string()
+            prompt = f"Analyze how interests change across Year 1 to Year 4. Data:\n{year_counts}\nProvide 2 short, bulleted insights."
+            st.session_state.insights['maturity'] = llm.invoke(prompt).content
 
 # Chat modal
 if st.session_state.get("chat_open", False):
@@ -1290,10 +1309,10 @@ with tab_quality:
     row1_col1, row1_col2 = st.columns(2)
     
     with row1_col1:
-        render_chart_card("📊 Status Distribution", lambda: chart_status_distribution(filtered_df))
+        render_chart_card("📊 Status Distribution", lambda: chart_status_distribution(filtered_df), insight_key="status")
     
     with row1_col2:
-        render_chart_card("📊 Drop-off Analysis", lambda: chart_dropoff_analysis(filtered_df))
+        render_chart_card("📊 Drop-off Analysis", lambda: chart_dropoff_analysis(filtered_df), insight_key="dropoff")
     
     st.markdown("<br>", unsafe_allow_html=True)
     
@@ -1301,10 +1320,10 @@ with tab_quality:
     row2_col1, row2_col2 = st.columns(2)
     
     with row2_col1:
-        render_chart_card("📊 Question Correlation Heatmap", lambda: chart_question_correlation_heatmap(filtered_df))
+        render_chart_card("📊 Question Correlation Heatmap", lambda: chart_question_correlation_heatmap(filtered_df), insight_key="correlation")
     
     with row2_col2:
-        render_chart_card("📊 Factors Driving Partial Responses", lambda: chart_partial_prediction_model(filtered_df))
+        render_chart_card("📊 Factors Driving Partial Responses", lambda: chart_partial_prediction_model(filtered_df), insight_key="partial_drivers")
 
 # Tab 2: Survey Results
 with tab_results:
@@ -1312,18 +1331,18 @@ with tab_results:
     row3_col1, row3_col2 = st.columns(2)
     
     with row3_col1:
-        render_chart_card("📊 Interest-Based Personas", lambda: chart_interest_personas(filtered_df))
+        render_chart_card("📊 Interest-Based Personas", lambda: chart_interest_personas(filtered_df), insight_key="personas", card_height=500)
     
     with row3_col2:
-        render_chart_card("📊 Motivation Drivers", lambda: chart_motivation_drivers(filtered_df))
+        render_chart_card("📊 Motivation Drivers", lambda: chart_motivation_drivers(filtered_df), insight_key="motivation", card_height=500)
     
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # Row 2: Brand Perception Ladder & Maturity Shift
+    # Row 2: Information Gap Analysis & Maturity Shift
     row4_col1, row4_col2 = st.columns(2)
     
     with row4_col1:
-        render_chart_card("📊 Information Gap Analysis", lambda: chart_information_gap_analysis(filtered_df))
+        render_chart_card("📊 Information Gap Analysis", lambda: chart_information_gap_analysis(filtered_df), insight_key="gap_analysis", card_height=500)
     
     with row4_col2:
-        render_chart_card("📊 Maturity Shift (Year 1 → 4)", lambda: chart_maturity_shift(filtered_df))
+        render_chart_card("📊 Maturity Shift (Year 1 → 4)", lambda: chart_maturity_shift(filtered_df), insight_key="maturity", card_height=500)
