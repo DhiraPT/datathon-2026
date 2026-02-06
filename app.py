@@ -1233,52 +1233,327 @@ if gen_insights and not filtered_df.empty:
     with st.spinner("Generating insights for all graphs..."):
         llm, _ = build_analyst_agent(filtered_df)
         
-        # Status Distribution
+        # Filter context for all prompts
+        filter_context = f"""
+FILTERS APPLIED:
+- Schools: {', '.join(selected_schools) if selected_schools else 'All'}
+- Years: {', '.join(selected_years) if selected_years else 'All'}
+- Total responses analyzed: {len(filtered_df)}
+"""
+        
+        # 1. Status Distribution
         if 'status' in filtered_df.columns:
             status_counts = filtered_df['status'].value_counts().to_string()
-            prompt = f"Analyze survey status distribution. Data:\n{status_counts}\nProvide 2 short, bulleted insights."
+            status_pct = (filtered_df['status'].value_counts(normalize=True) * 100).round(1).to_string()
+            completion_rate = (filtered_df['status'] == 'Complete').mean() * 100
+            partial_rate = (filtered_df['status'] == 'Partial').mean() * 100
+            disqualify_rate = (filtered_df['status'] == 'Disqualified').mean() * 100
+            avg_duration = filtered_df['duration_sec'].mean() if 'duration_sec' in filtered_df.columns else None
+            
+            data_context = f"""
+{filter_context}
+STATUS DISTRIBUTION:
+Counts:\n{status_counts}
+Percentages:\n{status_pct}
+
+KEY METRICS:
+- Completion Rate: {completion_rate:.1f}%
+- Partial Rate: {partial_rate:.1f}%
+- Disqualification Rate: {disqualify_rate:.1f}%
+- Average Duration: {avg_duration:.1f} seconds""" if avg_duration else f"""
+{filter_context}
+STATUS DISTRIBUTION:
+Counts:\n{status_counts}
+Percentages:\n{status_pct}
+
+KEY METRICS:
+- Completion Rate: {completion_rate:.1f}%
+- Partial Rate: {partial_rate:.1f}%
+- Disqualification Rate: {disqualify_rate:.1f}%
+"""
+            
+            prompt = f"""Analyze this survey status data comprehensively:
+{data_context}
+
+Provide 3 actionable insights with specific recommendations for:
+1. What the completion rate suggests about survey engagement
+2. How to reduce partial/drop-off rates
+3. Any patterns that need immediate attention"""
             st.session_state.insights['status'] = llm.invoke(prompt).content
         
-        # Drop-off Analysis
+        # 2. Drop-off Analysis
         if 'status' in filtered_df.columns:
-            dropoff_count = (filtered_df['status'] == 'Partial').sum()
-            prompt = f"Analyze survey drop-offs. {dropoff_count} partial responses out of {len(filtered_df)}. Provide 2 short, bulleted insights."
+            partial_df = filtered_df[filtered_df['status'] == 'Partial']
+            dropoff_count = len(partial_df)
+            completion_count = (filtered_df['status'] == 'Complete').sum()
+            
+            # Get first blank question for partials
+            survey_questions = ['school', 'year', 'qualification', 'subject', 'nationality', 'gender', 
+                              'perception', 'info_roles', 'info_career', 'info_comp', 'info_culture', 
+                              'info_process', 'info_other_text', 'attractiveness', 'motivation', 'motivation_other']
+            survey_questions = [q for q in survey_questions if q in filtered_df.columns]
+            
+            def first_blank(row):
+                for q in survey_questions:
+                    if pd.isna(row[q]) or str(row[q]).strip() == "":
+                        return q
+                return None
+            
+            if len(partial_df) > 0:
+                partial_df_work = partial_df.copy()
+                partial_df_work['first_dropoff'] = partial_df_work.apply(first_blank, axis=1)
+                dropoff_summary = partial_df_work['first_dropoff'].value_counts().head(5).to_string()
+            else:
+                dropoff_summary = "No partial responses"
+            
+            data_context = f"""
+{filter_context}
+DROP-OFF ANALYSIS:
+- Total Responses: {len(filtered_df)}
+- Complete: {completion_count} ({completion_count/len(filtered_df)*100:.1f}%)
+- Partial/Drop-off: {dropoff_count} ({dropoff_count/len(filtered_df)*100:.1f}%)
+
+TOP DROP-OFF POINTS (first blank question):\n{dropoff_summary}
+"""
+            
+            prompt = f"""Analyze this survey drop-off data:
+{data_context}
+
+Provide 3 actionable insights:
+1. Which question is causing the most drop-offs and why
+2. How to redesign the survey to improve completion
+3. Targeted recommendations to reduce partial response rate"""
             st.session_state.insights['dropoff'] = llm.invoke(prompt).content
         
-        # Question Correlation Heatmap
+        # 3. Question Correlation Heatmap
         if all(col in filtered_df.columns for col in ['info_roles', 'info_career', 'info_comp', 'info_culture', 'info_process']):
             info_binary = filtered_df[['info_roles', 'info_career', 'info_comp', 'info_culture', 'info_process']].notna().astype(int)
-            corr = info_binary.corr().to_string()
-            prompt = f"Analyze correlation between 'Learn More' question responses. Data:\n{corr}\nProvide 2 short, bulleted insights."
+            corr = info_binary.corr().round(2).to_string()
+            
+            # Get interest rates
+            interest_rates = (info_binary.sum() / len(info_binary) * 100).round(1).to_string()
+            
+            data_context = f"""
+{filter_context}
+CORRELATION MATRIX:\n{corr}
+
+INTEREST RATES (% who selected each option):\n{interest_rates}
+"""
+            
+            prompt = f"""Analyze this correlation data from 'Learn More' questions:
+{data_context}
+
+Provide 3 actionable insights:
+1. Which information topics are redundant (highly correlated)?
+2. What unique interests should be prioritized?
+3. Recommendations for consolidating survey questions"""
             st.session_state.insights['correlation'] = llm.invoke(prompt).content
         
-        # Partial Response Drivers
+        # 4. Partial Response Drivers
         if 'status' in filtered_df.columns:
-            partial_count = (filtered_df['status'] == 'Partial').sum()
-            prompt = f"Analyze factors driving partial survey responses. {partial_count} partial responses detected. Provide 2 short, bulleted insights."
+            # Get model data if available
+            import os
+            if os.path.exists('partial_response_model.pkl'):
+                import joblib
+                rf = joblib.load('partial_response_model.pkl')
+                analysis_vars = joblib.load('partial_response_feature_list.pkl')
+                
+                # Calculate partial rate by demographic
+                partial_rate_by_school = (filtered_df.groupby('school')['status'].apply(lambda x: (x == 'Partial').mean() * 100)).round(1).to_string()
+                partial_rate_by_year = (filtered_df.groupby('year')['status'].apply(lambda x: (x == 'Partial').mean() * 100)).round(1).to_string()
+                partial_rate_by_qual = (filtered_df.groupby('qualification')['status'].apply(lambda x: (x == 'Partial').mean() * 100)).round(1).to_string()
+                
+                # Feature importance
+                importance = pd.Series(rf.feature_importances_, index=analysis_vars).sort_values(ascending=False).round(3).to_string()
+                
+                data_context = f"""
+{filter_context}
+PARTIAL RESPONSE DRIVERS:
+Feature Importance:\n{importance}
+
+Partial Rate by School:\n{partial_rate_by_school}
+
+Partial Rate by Year:\n{partial_rate_by_year}
+
+Partial Rate by Qualification:\n{partial_rate_by_qual}
+"""
+            else:
+                partial_by_school = (filtered_df.groupby('school')['status'].value_counts(normalize=True).unstack() * 100).round(1).to_string()
+                partial_by_year = (filtered_df.groupby('year')['status'].value_counts(normalize=True).unstack() * 100).round(1).to_string()
+                
+                data_context = f"""
+{filter_context}
+PARTIAL RESPONSE ANALYSIS:
+
+Partial Rate by School:\n{partial_by_school}
+
+Partial Rate by Year:\n{partial_by_year}
+"""
+            
+            prompt = f"""Analyze what drives partial survey responses:
+{data_context}
+
+Provide 3 actionable insights:
+1. Which demographics have highest partial rate?
+2. Why might certain groups be dropping off?
+3. Targeted interventions to improve completion for at-risk groups"""
             st.session_state.insights['partial_drivers'] = llm.invoke(prompt).content
         
-        # Interest-Based Personas
+        # 5. Interest-Based Personas
         if 'subject' in filtered_df.columns and 'attractiveness' in filtered_df.columns:
-            subject_counts = filtered_df['subject'].value_counts().head(10).to_string()
-            prompt = f"Analyze respondent personas by subject/major. Data:\n{subject_counts}\nProvide 2 short, bulleted insights."
+            subject_counts = filtered_df['subject'].value_counts().head(15).to_string()
+            avg_attract_by_subject = filtered_df.groupby('subject')['attractiveness'].mean().round(2).sort_values(ascending=False).head(15).to_string()
+            
+            # Calculate info interest rates by subject
+            info_cols = ['info_roles', 'info_career', 'info_comp', 'info_culture', 'info_process']
+            info_cols_exist = [c for c in info_cols if c in filtered_df.columns]
+            if info_cols_exist:
+                top_subjects = filtered_df['subject'].value_counts().head(5).index
+                subject_interest_profile = filtered_df[filtered_df['subject'].isin(top_subjects)].groupby('subject')[info_cols_exist].apply(lambda x: (x.notna().mean() * 100).round(1)).to_string()
+            else:
+                subject_interest_profile = "No info columns available"
+            
+            data_context = f"""
+{filter_context}
+TOP 15 SUBJECTS/MAJORS:
+{subject_counts}
+
+AVG ATTRACTIVENESS BY SUBJECT:\n{avg_attract_by_subject}
+
+INTEREST PROFILE BY SUBJECT:\n{subject_interest_profile}
+"""
+            
+            prompt = f"""Analyze respondent personas by subject/major:
+{data_context}
+
+Provide 3 actionable insights:
+1. What are the distinct persona groups and their characteristics?
+2. Which subjects have highest/lowest engagement?
+3. Targeted engagement strategies for each persona type"""
             st.session_state.insights['personas'] = llm.invoke(prompt).content
         
-        # Motivation Drivers
+        # 6. Motivation Drivers
         if 'motivation' in filtered_df.columns and 'attractiveness' in filtered_df.columns:
-            motivation_stats = filtered_df.groupby('motivation')['attractiveness'].agg(['mean', 'count']).to_string()
-            prompt = f"Analyze motivation factors driving high attractiveness. Data:\n{motivation_stats}\nProvide 2 short, bulleted insights."
+            motivation_counts = filtered_df['motivation'].value_counts().head(15).to_string()
+            motivation_stats_df = filtered_df.groupby('motivation')['attractiveness'].agg(['mean', 'median', 'count', 'std']).round(2).sort_values('mean', ascending=False).head(15)
+            motivation_stats = motivation_stats_df.to_string()
+            
+            # Top motivations with high attractiveness
+            high_attract = motivation_stats_df[motivation_stats_df['mean'] >= 7].to_string()
+            low_attract = motivation_stats_df[motivation_stats_df['mean'] < 5].to_string()
+            
+            data_context = f"""
+{filter_context}
+TOP 15 MOTIVATIONS:\n{motivation_counts}
+
+MOTIVATION STATS (sorted by avg attractiveness):\n{motivation_stats}
+
+High Attractiveness (>=7):\n{high_attract}
+
+Low Attractiveness (<5):\n{low_attract}
+"""
+            
+            prompt = f"""Analyze motivation factors driving attractiveness:
+{data_context}
+
+Provide 3 actionable insights:
+1. What motivates respondents most to rate highly?
+2. Which motivations have lowest attractiveness ratings?
+3. Recommendations for leveraging top motivators in employer branding"""
             st.session_state.insights['motivation'] = llm.invoke(prompt).content
         
-        # Information Gap Analysis
+        # 7. Information Gap Analysis
         if all(col in filtered_df.columns for col in ['info_roles', 'info_career', 'info_comp', 'info_culture', 'info_process']) and 'motivation' in filtered_df.columns:
-            prompt = f"Analyze information gap between what respondents want to learn vs what motivates them to apply. Provide 2 short, bulleted insights."
+            info_cols = ['info_roles', 'info_career', 'info_comp', 'info_culture', 'info_process']
+            
+            # Want to learn rates
+            info_binary = filtered_df[info_cols].notna().astype(int)
+            want_to_learn = (info_binary.sum() / len(info_binary) * 100).round(1)
+            
+            # Motivation rates
+            motivation_mapping = {
+                'Compensation & Benefits': ['Competitive salary', 'Compensation and benefits', 'Sign-on bonus', 'Performance bonus'],
+                'Career Progression': ['Career development and growth opportunities', 'Career progression', 'Professional development'],
+                'Work-Life Balance': ['Work-life balance', 'Company culture', 'Flexible working arrangements', 'Team environment'],
+                'Types of Roles': ['Challenging and interesting work', 'Job security', 'Variety of roles', 'Role diversity'],
+                'Application Process': ['Recruitment process', 'Interview process']
+            }
+            
+            motivation_rates = (filtered_df['motivation'].value_counts() / len(filtered_df) * 100).round(2)
+            
+            aggregated_motivation = {}
+            for category, keywords in motivation_mapping.items():
+                total = sum(motivation_rates[motivation_rates.index.str.contains(k, case=False, na=False)].sum() for k in keywords)
+                aggregated_motivation[category] = total
+            
+            gap_df = pd.DataFrame({
+                'Want to Learn (%)': want_to_learn,
+                'Motivates to Apply (%)': pd.Series(aggregated_motivation)
+            }).round(1)
+            gap_df['Gap'] = (gap_df['Want to Learn (%)'] - gap_df['Motivates to Apply (%)']).round(1)
+            
+            data_context = f"""
+{filter_context}
+INFORMATION GAP ANALYSIS:
+{gap_df.to_string()}
+
+INTERPRETATION:
+- Positive Gap: Respondents want to learn but it's NOT a top motivator
+- Negative Gap: Topic motivates applications even if not frequently selected as 'want to learn'
+"""
+            
+            prompt = f"""Analyze the information gap between curiosity and motivation:
+{data_context}
+
+Provide 3 actionable insights:
+1. What information are respondents curious about but doesn't drive applications?
+2. What does drive applications despite lower curiosity?
+3. Content strategy recommendations to close the gap"""
             st.session_state.insights['gap_analysis'] = llm.invoke(prompt).content
         
-        # Maturity Shift
+        # 8. Maturity Shift
         if 'year' in filtered_df.columns:
-            year_counts = filtered_df['year'].value_counts().to_string()
-            prompt = f"Analyze how interests change across Year 1 to Year 4. Data:\n{year_counts}\nProvide 2 short, bulleted insights."
+            year_order = ['Year 1', 'Year 2', 'Year 3', 'Year 4']
+            filtered_years = [y for y in year_order if y in filtered_df['year'].unique()]
+            
+            year_counts = filtered_df['year'].value_counts().reindex(filtered_years).to_string()
+            
+            # Interest rates by year
+            info_cols = ['info_roles', 'info_career', 'info_comp', 'info_culture', 'info_process']
+            info_cols_exist = [c for c in info_cols if c in filtered_df.columns]
+            
+            if info_cols_exist:
+                year_interest = {}
+                for year in filtered_years:
+                    year_df = filtered_df[filtered_df['year'] == year]
+                    year_interest[year] = {col: (year_df[col].notna().mean() * 100).round(1) for col in info_cols_exist}
+                year_interest_df = pd.DataFrame(year_interest).T
+                interest_by_year = year_interest_df.to_string()
+            else:
+                interest_by_year = "No info columns available"
+            
+            # Attractiveness by year
+            if 'attractiveness' in filtered_df.columns:
+                attract_by_year = filtered_df.groupby('year')['attractiveness'].agg(['mean', 'count']).reindex(filtered_years).round(2).to_string()
+            else:
+                attract_by_year = "No attractiveness data"
+            
+            data_context = f"""
+{filter_context}
+RESPONDENTS BY YEAR:\n{year_counts}
+
+AVERAGE ATTRACTIVENESS BY YEAR:\n{attract_by_year}
+
+INTEREST RATES BY YEAR:\n{interest_by_year}
+"""
+            
+            prompt = f"""Analyze how interests evolve across academic years:
+{data_context}
+
+Provide 3 actionable insights:
+1. How do information interests change from Year 1 to Year 4?
+2. What should be the messaging strategy for each year?
+3. Recommendations for year-targeted career outreach"""
             st.session_state.insights['maturity'] = llm.invoke(prompt).content
 
 # Chat modal
