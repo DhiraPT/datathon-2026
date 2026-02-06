@@ -6,6 +6,7 @@ openpyxl==3.1.5
 # Visualisation
 matplotlib==3.10.8
 seaborn==0.13.2
+plotly==6.5.2
 
 # Machine learning
 scikit-learn==1.8.0
