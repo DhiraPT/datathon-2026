@@ -100,7 +100,6 @@ SAAS_CSS = """
         border-radius: 12px;
         padding: 20px;
         box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-        height: 100%;
         transition: box-shadow 0.2s ease, transform 0.2s ease;
     }
     .chart-card:hover {
@@ -115,9 +114,14 @@ SAAS_CSS = """
         align-items: center;
         gap: 8px;
     }
-
-    /* --- Insight Text --- */
-    .insight-text {
+    
+    /* --- Chart Container --- */
+    .chart-container {
+        margin-bottom: 12px;
+    }
+    
+    /* --- Insight Text (scrollable) --- */
+    .insight-scroll {
         font-size: 12px;
         color: #6b7280;
         font-style: italic;
@@ -125,6 +129,11 @@ SAAS_CSS = """
         padding-top: 12px;
         border-top: 1px solid #f3f4f6;
         line-height: 1.5;
+        max-height: 120px;
+        overflow-y: auto;
+        background: #fafafa;
+        border-radius: 8px;
+        padding: 12px;
     }
 
     /* --- Placeholder Card --- */
@@ -560,11 +569,21 @@ def render_metrics(filtered_df: pd.DataFrame):
 
 def render_chart_card(title: str, chart_function, insight_key: str = None):
     """Helper to render a chart card with optional insight."""
-    st.markdown(f"<div class='chart-card'><h4>{title}</h4>", unsafe_allow_html=True)
-    chart_function()
-    if insight_key and insight_key in st.session_state.insights:
-        st.markdown(f"<p class='insight-text'>{st.session_state.insights[insight_key]}</p>", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+    # Use Streamlit native container with border for card effect
+    with st.container(border=True):
+        st.markdown(f"**{title}**")
+        chart_function()
+        # Scrollable insights area with fixed height
+        if insight_key and insight_key in st.session_state.insights:
+            insight_text = st.session_state.insights[insight_key]
+        else:
+            insight_text = "💡 Click '✨ Generate Insights' in sidebar to see AI-generated insights for this chart."
+        st.markdown(f"""
+        <div class="insight-scroll">
+            <strong>💡 Insight:</strong><br>
+            {insight_text}
+        </div>
+        """, unsafe_allow_html=True)
 
 
 # =============================================================================
@@ -684,7 +703,7 @@ def chart_question_correlation_heatmap(filtered_df: pd.DataFrame):
 
 
 def chart_partial_prediction_model(filtered_df: pd.DataFrame):
-    """Partial Prediction Model Performance - Cells 3044-3320"""
+    """Factors Driving Partial Survey Responses - Feature Importance"""
     # Check if model files exist
     import os
     model_path = 'partial_response_model.pkl'
@@ -692,40 +711,11 @@ def chart_partial_prediction_model(filtered_df: pd.DataFrame):
     features_path = 'partial_response_feature_list.pkl'
     
     if not (os.path.exists(model_path) and os.path.exists(encoders_path) and os.path.exists(features_path)):
-        # Fallback to metrics display if model files not found
-        st.markdown("""
-        <div style='text-align: center; padding: 20px;'>
-            <h4 style='color: #2E7D32;'>Model Performance Metrics</h4>
-            <div style='display: flex; justify-content: center; gap: 30px; margin-top: 15px;'>
-                <div style='background: #f5f5f5; padding: 15px 25px; border-radius: 8px;'>
-                    <div style='font-size: 24px; font-weight: bold; color: #2E7D32;'>86.4%</div>
-                    <div style='font-size: 12px; color: #666;'>Accuracy</div>
-                </div>
-                <div style='background: #f5f5f5; padding: 15px 25px; border-radius: 8px;'>
-                    <div style='font-size: 24px; font-weight: bold; color: #FF9800;'>4.7%</div>
-                    <div style='font-size: 12px; color: #666;'>Precision</div>
-                </div>
-                <div style='background: #f5f5f5; padding: 15px 25px; border-radius: 8px;'>
-                    <div style='font-size: 24px; font-weight: bold; color: #2196F3;'>21.1%</div>
-                    <div style='font-size: 12px; color: #666;'>Recall</div>
-                </div>
-                <div style='background: #f5f5f5; padding: 15px 25px; border-radius: 8px;'>
-                    <div style='font-size: 24px; font-weight: bold; color: #9C27B0;'>7.6%</div>
-                    <div style='font-size: 12px; color: #666;'>F1-Score</div>
-                </div>
-                <div style='background: #f5f5f5; padding: 15px 25px; border-radius: 8px;'>
-                    <div style='font-size: 24px; font-weight: bold; color: #00BCD4;'>57.7%</div>
-                    <div style='font-size: 12px; color: #666;'>ROC-AUC</div>
-                </div>
-            </div>
-            <p style='font-size: 11px; color: #999; margin-top: 15px;'>Random Forest Model trained on respondent demographics</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; color: #666;'>Model files not found</p>", unsafe_allow_html=True)
         return
     
     try:
         import joblib
-        from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
         from sklearn.model_selection import train_test_split
         from sklearn.preprocessing import LabelEncoder
         
@@ -739,7 +729,7 @@ def chart_partial_prediction_model(filtered_df: pd.DataFrame):
         if 'school' in df_work.columns and 'university' not in df_work.columns:
             df_work = df_work.rename(columns={'school': 'university'})
         
-        # Prepare data - use original feature names from model training
+        # Prepare data
         analysis_vars_local = [v for v in analysis_vars if v in df_work.columns]
         
         # Ensure all model features are present
@@ -751,7 +741,7 @@ def chart_partial_prediction_model(filtered_df: pd.DataFrame):
         df_model = df_work[analysis_vars + ['status']].dropna().copy()
         
         if len(df_model) < len(analysis_vars) + 1:
-            st.markdown("<p style='text-align: center; color: #666;'>Insufficient data for model visualization</p>", unsafe_allow_html=True)
+            st.markdown("<p style='text-align: center; color: #666;'>Insufficient data</p>", unsafe_allow_html=True)
             return
         
         # Target: Partial vs Not Partial
@@ -763,38 +753,22 @@ def chart_partial_prediction_model(filtered_df: pd.DataFrame):
             if col in label_encoders:
                 le = label_encoders[col]
                 X[col] = X[col].astype(str)
-                # Handle unseen labels by mapping to most common
                 X[col] = X[col].apply(lambda x: le.transform([x])[0] if x in le.classes_ else 0)
         
         y = df_model['is_partial']
         
         if len(y.unique()) < 2:
-            st.markdown("<p style='text-align: center; color: #666;'>Insufficient class variation for model visualization</p>", unsafe_allow_html=True)
+            st.markdown("<p style='text-align: center; color: #666;'>Insufficient class variation</p>", unsafe_allow_html=True)
             return
         
-        # Split and predict
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
-        y_pred = rf.predict(X_test)
-        
-        # Create 2-subplot figure
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5), dpi=100)
-        
-        # Left: Confusion Matrix
-        cm = confusion_matrix(y_test, y_pred)
-        disp = ConfusionMatrixDisplay(
-            confusion_matrix=cm,
-            display_labels=['Not Partial', 'Partial']
-        )
-        disp.plot(ax=axes[0], cmap='Oranges', values_format='d')
-        axes[0].set_title('Confusion Matrix: Partial vs Not Partial', fontsize=12, fontweight='bold')
-        
-        # Right: Feature Importance
+        # Feature Importance Chart (single plot)
+        fig, ax = plt.subplots(figsize=(8, 5), dpi=100)
         importances = pd.Series(rf.feature_importances_, index=analysis_vars).sort_values(ascending=True)
         
-        axes[1].barh(importances.index, importances.values, color='#FFB347', edgecolor='black')
-        axes[1].set_title('Predictive Importance: Factors Driving Partial Responses', fontsize=12, fontweight='bold')
-        axes[1].set_xlabel('Importance Score', fontsize=11)
-        axes[1].grid(axis='x', alpha=0.3)
+        ax.barh(importances.index, importances.values, color='#FFB347', edgecolor='black')
+        ax.set_title('Predictive Importance: Factors Driving Partial Responses', fontsize=12, fontweight='bold')
+        ax.set_xlabel('Importance Score', fontsize=11)
+        ax.grid(axis='x', alpha=0.3)
         
         plt.tight_layout()
         st.pyplot(fig)
@@ -1330,7 +1304,7 @@ with tab_quality:
         render_chart_card("📊 Question Correlation Heatmap", lambda: chart_question_correlation_heatmap(filtered_df))
     
     with row2_col2:
-        render_chart_card("📊 Partial Prediction Model Performance", lambda: chart_partial_prediction_model(filtered_df))
+        render_chart_card("📊 Factors Driving Partial Responses", lambda: chart_partial_prediction_model(filtered_df))
 
 # Tab 2: Survey Results
 with tab_results:
