@@ -453,7 +453,7 @@ def run_analyst_agent(user_question: str, df) -> tuple:
         content = response.content
 
         # Check if response contains code (```python or plt./sns./plot)
-        if "```python" in content or ("plt." in content and "save the figure" in content):
+        if "```python" in content or ("plt." in content and ("savefig" in content or "save('" in content or 'save("' in content or ".png" in content or ".jpg" in content)):
             # Extract code
             code = content
             if "```python" in code:
