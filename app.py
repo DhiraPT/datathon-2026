@@ -944,115 +944,137 @@ def chart_motivation_drivers(filtered_df: pd.DataFrame):
     st.pyplot(fig)
 
 
-def chart_brand_perception_ladder(filtered_df: pd.DataFrame):
-    """Brand Perception Ladder - Cell 4575"""
-    if 'attractiveness' not in filtered_df.columns or 'perception' not in filtered_df.columns:
+def chart_information_gap_analysis(filtered_df: pd.DataFrame):
+    """Information Gap Analysis - Cell 4775"""
+    # Filter complete responses
+    gap_data = filtered_df[filtered_df['status'] == 'Complete'].copy()
+    
+    if len(gap_data) == 0:
+        st.markdown("<p style='text-align: center; color: #666;'>No complete responses to analyze</p>", unsafe_allow_html=True)
         return
     
-    familiarity_data = filtered_df[(filtered_df['status'] == 'Complete') & 
-                                  (filtered_df['attractiveness'].notna()) & 
-                                  (filtered_df['perception'].notna())].copy()
+    # Calculate "Want to Learn" rates
+    info_cols = ['info_roles', 'info_career', 'info_comp', 'info_culture', 'info_process']
     
-    if len(familiarity_data) == 0:
-        st.markdown("<p style='text-align: center; color: #666;'>No complete responses with perception data</p>", unsafe_allow_html=True)
+    # Check if columns exist
+    missing_cols = [col for col in info_cols if col not in gap_data.columns]
+    if missing_cols:
+        st.markdown(f"<p style='text-align: center; color: #666;'>Missing columns: {', '.join(missing_cols)}</p>", unsafe_allow_html=True)
         return
     
-    perception_order = [
-        "I don't know much about this organisation.",
-        "I know about this organisation but have no opinion on it as an employer.",
-        "I think this organisation would be a desirable place to work.",
-        "I would apply for a position at this organisation."
-    ]
+    info_names = {
+        'info_roles': 'Types of Roles',
+        'info_career': 'Career Progression',
+        'info_comp': 'Compensation & Benefits',
+        'info_culture': 'Work-Life Balance & Culture',
+        'info_process': 'Application Process'
+    }
     
-    perception_means = familiarity_data.groupby('perception')['attractiveness'].mean()
-    perception_means = perception_means.reindex(perception_order).dropna()
+    info_interest_rates = {}
+    for col in info_cols:
+        rate = (gap_data[col].notna().sum() / len(gap_data)) * 100
+        info_interest_rates[info_names[col]] = rate
     
-    if len(perception_means) == 0:
-        st.markdown("<p style='text-align: center; color: #666;'>Insufficient perception data</p>", unsafe_allow_html=True)
+    # Calculate "Motivation" rates
+    if 'motivation' not in gap_data.columns:
+        st.markdown("<p style='text-align: center; color: #666;'>Missing motivation column</p>", unsafe_allow_html=True)
         return
     
-    # Create labels for perception levels
-    perception_labels = []
-    for perc in perception_means.index:
-        if "don't know" in perc.lower():
-            perception_labels.append("Don't Know Much\n(Awareness)")
-        elif "no opinion" in perc.lower():
-            perception_labels.append("Know, No Opinion\n(Recognition)")
-        elif "desirable" in perc.lower():
-            perception_labels.append("Desirable Employer\n(Consideration)")
-        elif "would apply" in perc.lower():
-            perception_labels.append("Would Apply\n(Intent)")
-        else:
-            perception_labels.append(perc[:20])
+    motivation_rates = (gap_data['motivation'].value_counts() / len(gap_data)) * 100
     
-    colors_familiarity = ['#C0392B', '#E67E22', '#3498DB', '#27AE60'][:len(perception_means)]
+    # Create mapping between similar concepts
+    motivation_mapping = {
+        'Compensation & Benefits': ['Competitive salary', 'Compensation and benefits', 
+                                    'Sign-on bonus', 'Performance bonus'],
+        'Career Progression': ['Career development and growth opportunities', 
+                              'Career progression', 'Professional development'],
+        'Work-Life Balance & Culture': ['Work-life balance', 'Company culture', 
+                                        'Flexible working arrangements', 'Team environment'],
+        'Types of Roles': ['Challenging and interesting work', 'Job security', 
+                          'Variety of roles', 'Role diversity'],
+        'Application Process': ['Recruitment process', 'Interview process']
+    }
     
-    # Build data for violin plot - only for perception levels that have data
-    data_violin = []
-    perception_list_with_data = []
-    for p in perception_order:
-        data_subset = familiarity_data[familiarity_data['perception'] == p]['attractiveness'].values
-        if len(data_subset) > 0:
-            data_violin.append(data_subset)
-            perception_list_with_data.append(p)
+    # Calculate aggregated motivation rates
+    aggregated_motivation = {}
+    for category, keywords in motivation_mapping.items():
+        total_rate = 0
+        for keyword in keywords:
+            matches = motivation_rates[motivation_rates.index.str.contains(keyword, case=False, na=False)]
+            total_rate += matches.sum()
+        aggregated_motivation[category] = total_rate
     
-    # Create 2-subplot figure matching notebook
+    # Create comparison DataFrame
+    gap_df = pd.DataFrame({
+        'Want to Learn (%)': pd.Series(info_interest_rates),
+        'Motivates to Apply (%)': pd.Series(aggregated_motivation)
+    }).fillna(0)
+    
+    gap_df['Gap (Curiosity - Motivation)'] = gap_df['Want to Learn (%)'] - gap_df['Motivates to Apply (%)']
+    gap_df = gap_df.sort_values('Gap (Curiosity - Motivation)', ascending=False)
+    
+    if len(gap_df) == 0:
+        st.markdown("<p style='text-align: center; color: #666;'>Insufficient data for gap analysis</p>", unsafe_allow_html=True)
+        return
+    
+    # Create 2-subplot figure
     fig, axes = plt.subplots(1, 2, figsize=(14, 6), dpi=100)
     
-    # Left: Bar chart with dividend arrows
-    bars = axes[0].barh(range(len(perception_means)), perception_means.values, 
-                       color=colors_familiarity, edgecolor='black', height=0.6)
-    axes[0].set_yticks(range(len(perception_means)))
-    axes[0].set_yticklabels(perception_labels, fontsize=10)
-    axes[0].set_xlabel('Average Attractiveness Rating (1-10)', fontsize=11)
-    axes[0].set_title('The Familiarity Ladder: Brand Awareness ROI', fontsize=12, fontweight='bold')
-    axes[0].set_xlim(0, 10)
+    # Left: Grouped bar chart
+    x = np.arange(len(gap_df.index))
+    width = 0.35
     
-    # Add value labels and dividend arrows between levels
-    for i, (bar, val) in enumerate(zip(bars, perception_means.values)):
-        axes[0].text(val + 0.15, i, f"{val:.2f}", va='center', fontweight='bold', fontsize=11)
-        
-        # Add arrows showing dividend between levels
-        if i > 0:
-            prev_val = perception_means.values[i-1]
-            dividend = val - prev_val
-            mid_y = i - 0.5
-            axes[0].annotate('', xy=(val, mid_y), xytext=(prev_val, mid_y),
-                            arrowprops=dict(arrowstyle='->', lw=2, color='darkgreen'))
-            axes[0].text((prev_val + val) / 2, mid_y + 0.15, f'+{dividend:.2f}', 
-                        ha='center', fontsize=9, color='darkgreen', fontweight='bold',
-                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    bars1 = axes[0].bar(x - width/2, gap_df['Want to Learn (%)'], width, 
+                        label='Want to Learn About', color='#3498DB', edgecolor='black')
+    bars2 = axes[0].bar(x + width/2, gap_df['Motivates to Apply (%)'], width, 
+                        label='Motivates to Apply', color='#E74C3C', edgecolor='black')
     
-    # Right: Violin plot showing distributions
-    if len(data_violin) > 0:
-        parts = axes[1].violinplot(data_violin, positions=range(len(data_violin)), 
-                                   vert=False, widths=0.7, showmeans=True, showmedians=True)
-        
-        # Color the violins
-        colors_for_violin = ['#C0392B', '#E67E22', '#3498DB', '#27AE60'][:len(data_violin)]
-        for patch, color in zip(parts['bodies'], colors_for_violin):
-            patch.set_facecolor(color)
-            patch.set_alpha(0.5)
-        
-        # Create labels for violin plot
-        ytick_labels = []
-        for p in perception_list_with_data:
-            if "don't know" in p.lower():
-                ytick_labels.append("Don't Know")
-            elif "no opinion" in p.lower():
-                ytick_labels.append("Know, No Opinion")
-            elif "desirable" in p.lower():
-                ytick_labels.append("Desirable")
-            elif "would apply" in p.lower():
-                ytick_labels.append("Would Apply")
-            else:
-                ytick_labels.append(p[:20])
-        
-        axes[1].set_yticks(range(len(perception_list_with_data)))
-        axes[1].set_yticklabels(ytick_labels, fontsize=10)
-        axes[1].set_xlabel('Attractiveness Rating (1-10)', fontsize=11)
-        axes[1].set_title('Rating Distribution by Familiarity Level', fontsize=12, fontweight='bold')
-        axes[1].set_xlim(0, 10)
+    axes[0].set_xlabel('Category', fontsize=11)
+    axes[0].set_ylabel('Percentage (%)', fontsize=11)
+    axes[0].set_title('Information Curiosity vs Motivation Gap', fontsize=12, fontweight='bold')
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels(gap_df.index, rotation=30, ha='right', fontsize=9)
+    axes[0].legend(fontsize=9)
+    axes[0].grid(axis='y', alpha=0.3)
+    
+    # Add value labels
+    for bars in [bars1, bars2]:
+        for bar in bars:
+            height = bar.get_height()
+            axes[0].text(bar.get_x() + bar.get_width()/2., height,
+                        f'{height:.1f}%', ha='center', va='bottom', fontsize=8)
+    
+    # Right: Gap visualization (lollipop chart)
+    gap_sorted = gap_df.sort_values('Gap (Curiosity - Motivation)')
+    colors_gap = ['#27AE60' if x < 0 else '#E74C3C' for x in gap_sorted['Gap (Curiosity - Motivation)']]
+    
+    y_positions = list(range(len(gap_sorted)))
+    axes[1].hlines(y=y_positions, xmin=0, xmax=gap_sorted['Gap (Curiosity - Motivation)'], 
+                   color=colors_gap, linewidth=3)
+    axes[1].scatter(gap_sorted['Gap (Curiosity - Motivation)'], y_positions, 
+                   color=colors_gap, s=100, zorder=3, edgecolor='black', linewidth=1.5)
+    
+    axes[1].axvline(0, color='black', linestyle='-', linewidth=1)
+    axes[1].set_yticks(y_positions)
+    axes[1].set_yticklabels(gap_sorted.index, fontsize=9)
+    axes[1].set_xlabel('Gap (Curiosity - Motivation) in pp', fontsize=11)
+    axes[1].set_title('Information Gap Analysis\n(Positive = More Curious Than Motivated)', fontsize=12, fontweight='bold')
+    axes[1].grid(axis='x', alpha=0.3)
+    
+    # Add value labels
+    for i, (idx, row) in enumerate(gap_sorted.iterrows()):
+        gap_val = row['Gap (Curiosity - Motivation)']
+        axes[1].text(gap_val + (2 if gap_val > 0 else -2), i, f'{gap_val:+.1f}pp', 
+                    va='center', ha='left' if gap_val > 0 else 'right', 
+                    fontweight='bold', fontsize=9)
+    
+    # Add annotations
+    axes[1].text(0.98, 0.02, '← More Motivation', 
+                transform=axes[1].transAxes, ha='right', va='bottom', 
+                fontsize=9, style='italic', color='#27AE60')
+    axes[1].text(0.02, 0.98, 'More Curiosity →', 
+                transform=axes[1].transAxes, ha='left', va='top', 
+                fontsize=9, style='italic', color='#E74C3C')
     
     plt.tight_layout()
     st.pyplot(fig)
@@ -1327,7 +1349,7 @@ with tab_results:
     row4_col1, row4_col2 = st.columns(2)
     
     with row4_col1:
-        render_chart_card("📊 Brand Perception Ladder", lambda: chart_brand_perception_ladder(filtered_df))
+        render_chart_card("📊 Information Gap Analysis", lambda: chart_information_gap_analysis(filtered_df))
     
     with row4_col2:
         render_chart_card("📊 Maturity Shift (Year 1 → 4)", lambda: chart_maturity_shift(filtered_df))
