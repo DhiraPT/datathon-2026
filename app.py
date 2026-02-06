@@ -592,9 +592,9 @@ def render_header():
             <h1>📊 GradSingapore Survey Analytics</h1>
             <p>Student perception survey analysis dashboard</p>
         </div>
-        <div class="header-actions">
-            <button class="header-btn" onclick="alert('Export feature coming soon!')">📥 Export</button>
-            <button class="header-btn" onclick="location.reload()">🔄 Refresh</button>
+        <div style="text-align: right; display: flex; flex-direction: column; align-items: flex-end;">
+            <div style="font-size: 32px; font-weight: bold; line-height: 1;">⑥⑦</div>
+            <div style="font-size: 12px; margin-top: 2px;">Six-Seven</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
