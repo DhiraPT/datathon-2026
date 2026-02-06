@@ -6,14 +6,17 @@ A professional Streamlit dashboard for analyzing student survey data.
 
 import streamlit as st
 import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
 from langchain_openai import ChatOpenAI
 import os
 import uuid
 import time
 import numpy as np
 from sklearn.cluster import KMeans
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 
 # =============================================================================
@@ -581,18 +584,16 @@ def render_metrics(filtered_df: pd.DataFrame):
     k4.metric("Avg Attractiveness", f"{avg_attract:.1f}")
 
 
-def render_chart_card(title: str, chart_function, insight_key: str = None, card_height: int = 800):
+def render_chart_card(title: str, chart_function, insight_key: str | None = None, card_height: int = 800):
     """Helper to render a chart card with optional insight."""
-    # Use Streamlit container with fixed height
-    with st.container(height=card_height):
-        st.markdown(f"**{title}**")
-        chart_function()
-        # Scrollable insights using Streamlit expander
-        if insight_key and insight_key in st.session_state.insights:
-            with st.expander("💡 View Insights", expanded=True):
-                st.markdown(st.session_state.insights[insight_key])
-        else:
-            st.info("💡 Click '✨ Generate Insights' in sidebar to see AI-generated insights")
+    st.markdown(f"**{title}**")
+    chart_function()
+    # Scrollable insights using Streamlit expander
+    if insight_key and insight_key in st.session_state.insights:
+        with st.expander("💡 View Insights", expanded=True):
+            st.markdown(st.session_state.insights[insight_key])
+    else:
+        st.info("💡 Click '✨ Generate Insights' in sidebar to see AI-generated insights")
 
 
 # =============================================================================
@@ -612,17 +613,28 @@ def chart_status_distribution(filtered_df: pd.DataFrame):
     
     status_counts = filtered_df['status'].value_counts().reindex(status_colors.keys())
     
-    fig, ax = plt.subplots(figsize=(5, 4), dpi=100)
-    wedges = ax.pie(
-        status_counts,
-        labels=status_counts.index,
-        autopct='%1.1f%%',
-        startangle=90,
-        colors=[status_colors[s] for s in status_counts.index],
-        wedgeprops=dict(width=0.5)
+    fig = px.pie(
+        names=status_counts.index,
+        values=status_counts.values,
+        hole=0.5,
+        color=status_counts.index,
+        color_discrete_map=status_colors,
+        title='Survey Status Distribution'
     )
-    ax.set_title('Survey Status Distribution', fontsize=12, fontweight='bold')
-    st.pyplot(fig)
+    
+    fig.update_traces(
+        textinfo='percent+label',
+        hovertemplate='<b>%{label}</b><br>Count: %{value}<br>Percentage: %{percent}<extra></extra>'
+    )
+    
+    fig.update_layout(
+        showlegend=True,
+        legend_title_text='Status',
+        font=dict(size=12),
+        margin=dict(t=50, b=20, l=20, r=20)
+    )
+    
+    st.plotly_chart(fig, width='stretch')
 
 
 def chart_dropoff_analysis(filtered_df: pd.DataFrame):
@@ -630,7 +642,6 @@ def chart_dropoff_analysis(filtered_df: pd.DataFrame):
     if 'status' not in filtered_df.columns:
         return
     
-    # Use 'school' instead of 'university' as per COLUMN_RENAME_MAP
     survey_questions = [
         'school', 'year', 'qualification', 'subject', 'nationality',
         'gender', 'perception', 'info_roles', 'info_career', 'info_comp',
@@ -638,7 +649,6 @@ def chart_dropoff_analysis(filtered_df: pd.DataFrame):
         'motivation', 'motivation_other'
     ]
     
-    # Filter to only questions that exist in the dataframe
     survey_questions = [q for q in survey_questions if q in filtered_df.columns]
     
     partial_df = filtered_df[filtered_df['status'] == 'Partial'].copy()
@@ -659,28 +669,60 @@ def chart_dropoff_analysis(filtered_df: pd.DataFrame):
     dropoff_summary.columns = ['question', 'num_dropoffs']
     dropoff_summary['percentage'] = (dropoff_summary['num_dropoffs'] / dropoff_summary['num_dropoffs'].sum() * 100).round(2)
     
-    fig, ax = plt.subplots(figsize=(8, 5), dpi=100)
-    sns.barplot(
-        data=dropoff_summary,
-        x='num_dropoffs',
-        y='question',
-        hue='question',
-        palette='Reds_r',
-        ax=ax,
-        legend=False
+    # Create readable labels
+    question_labels = {
+        'school': 'School',
+        'year': 'Year of Study',
+        'qualification': 'Qualification',
+        'subject': 'Subject/Major',
+        'nationality': 'Nationality',
+        'gender': 'Gender',
+        'perception': 'Employer Perception',
+        'info_roles': 'Types of Roles',
+        'info_career': 'Career Progression',
+        'info_comp': 'Compensation & Benefits',
+        'info_culture': 'Work-Life Balance & Culture',
+        'info_process': 'Application Process',
+        'info_other_text': 'Other Info Interest',
+        'attractiveness': 'Attractiveness Rating',
+        'motivation': 'Motivation Factor',
+        'motivation_other': 'Other Motivation'
+    }
+    dropoff_summary['question_label'] = dropoff_summary['question'].map(
+        lambda x: question_labels.get(x, x)
     )
-    ax.set_title('First Drop-Off Point for Partial Survey Responses', fontsize=12, fontweight='bold')
-    ax.set_xlabel('Number of Respondents', fontsize=11)
-    ax.set_ylabel('Question Where Respondents First Stopped', fontsize=11)
-    sns.despine()
-    st.pyplot(fig)
+    
+    fig = px.bar(
+        dropoff_summary,
+        x='num_dropoffs',
+        y='question_label',
+        orientation='h',
+        title='First Drop-Off Point for Partial Survey Responses',
+        labels={'question_label': 'Question Where Respondents First Stopped', 'num_dropoffs': 'Number of Respondents'},
+        text='num_dropoffs',
+        color='num_dropoffs',
+        color_continuous_scale='Reds'
+    )
+    
+    fig.update_traces(
+        hovertemplate='<b>%{y}</b><br>Drop-offs: %{x}<br>Percentage: %{customdata:.1f}%<extra></extra>',
+        customdata=dropoff_summary['percentage'].values
+    )
+    
+    fig.update_layout(
+        yaxis={'categoryorder': 'total ascending'},
+        coloraxis_showscale=False,
+        font=dict(size=12),
+        margin=dict(t=50, b=50, l=200, r=20)
+    )
+    
+    st.plotly_chart(fig, width='stretch')
 
 
 def chart_question_correlation_heatmap(filtered_df: pd.DataFrame):
     """Question Correlation Heatmap - Cell 2798"""
     info_cols = ['info_roles', 'info_career', 'info_comp', 'info_culture', 'info_process']
     
-    # Check if columns exist
     missing_cols = [col for col in info_cols if col not in filtered_df.columns]
     if missing_cols:
         st.markdown(f"<p style='text-align: center; color: #666;'>Missing columns: {', '.join(missing_cols)}</p>", unsafe_allow_html=True)
@@ -697,24 +739,28 @@ def chart_question_correlation_heatmap(filtered_df: pd.DataFrame):
         'info_process': 'Application Process'
     }
     
-    fig, ax = plt.subplots(figsize=(7, 5), dpi=100)
-    sns.heatmap(
-        info_corr.rename(index=info_rename_map, columns=info_rename_map),
-        annot=True,
-        cmap='coolwarm',
-        center=0,
-        fmt='.2f',
-        ax=ax
+    info_corr_renamed = info_corr.rename(index=info_rename_map, columns=info_rename_map)
+    
+    fig = px.imshow(
+        info_corr_renamed,
+        text_auto='.2f',
+        aspect='auto',
+        color_continuous_scale='RdBu_r',
+        zmin=-1,
+        zmax=1,
+        title='Redundancy Check: Learn More Correlations'
     )
-    ax.set_title('Redundancy Check: Learn More Correlations', fontsize=12, fontweight='bold')
-    plt.tight_layout()
-    st.pyplot(fig)
+    
+    fig.update_layout(
+        font=dict(size=11),
+        margin=dict(t=50, b=50, l=20, r=20)
+    )
+    
+    st.plotly_chart(fig, width='stretch')
 
 
 def chart_partial_prediction_model(filtered_df: pd.DataFrame):
     """Factors Driving Partial Survey Responses - Feature Importance"""
-    # Check if model files exist
-    import os
     model_path = 'partial_response_model.pkl'
     encoders_path = 'partial_response_label_encoders.pkl'
     features_path = 'partial_response_feature_list.pkl'
@@ -725,23 +771,18 @@ def chart_partial_prediction_model(filtered_df: pd.DataFrame):
     
     try:
         import joblib
-        from sklearn.model_selection import train_test_split
         from sklearn.preprocessing import LabelEncoder
         
-        # Load model and preprocessing objects
         rf = joblib.load(model_path)
         label_encoders = joblib.load(encoders_path)
         analysis_vars = joblib.load(features_path)
         
-        # Rename 'school' to 'university' to match model expectations
         df_work = filtered_df.copy()
         if 'school' in df_work.columns and 'university' not in df_work.columns:
             df_work = df_work.rename(columns={'school': 'university'})
         
-        # Prepare data
         analysis_vars_local = [v for v in analysis_vars if v in df_work.columns]
         
-        # Ensure all model features are present
         missing_features = [v for v in analysis_vars if v not in df_work.columns]
         if missing_features:
             st.markdown(f"<p style='text-align: center; color: #666;'>Missing features: {', '.join(missing_features)}</p>", unsafe_allow_html=True)
@@ -753,10 +794,8 @@ def chart_partial_prediction_model(filtered_df: pd.DataFrame):
             st.markdown("<p style='text-align: center; color: #666;'>Insufficient data</p>", unsafe_allow_html=True)
             return
         
-        # Target: Partial vs Not Partial
         df_model['is_partial'] = (df_model['status'] == 'Partial').astype(int)
         
-        # Encode features using stored encoders
         X = df_model[analysis_vars].copy()
         for col in analysis_vars:
             if col in label_encoders:
@@ -770,17 +809,44 @@ def chart_partial_prediction_model(filtered_df: pd.DataFrame):
             st.markdown("<p style='text-align: center; color: #666;'>Insufficient class variation</p>", unsafe_allow_html=True)
             return
         
-        # Feature Importance Chart (single plot)
-        fig, ax = plt.subplots(figsize=(8, 5), dpi=100)
         importances = pd.Series(rf.feature_importances_, index=analysis_vars).sort_values(ascending=True)
         
-        ax.barh(importances.index, importances.values, color='#FFB347', edgecolor='black')
-        ax.set_title('Predictive Importance: Factors Driving Partial Responses', fontsize=12, fontweight='bold')
-        ax.set_xlabel('Importance Score', fontsize=11)
-        ax.grid(axis='x', alpha=0.3)
+        # Create readable feature names
+        feature_labels = {
+            'school': 'School',
+            'year': 'Year of Study',
+            'qualification': 'Qualification',
+            'subject': 'Subject/Major',
+            'nationality': 'Nationality',
+            'gender': 'Gender',
+            'perception': 'Employer Perception',
+            'attractiveness': 'Attractiveness Rating'
+        }
         
-        plt.tight_layout()
-        st.pyplot(fig)
+        importances.index = [feature_labels.get(x, x) for x in importances.index]
+        
+        fig = px.bar(
+            x=importances.values,
+            y=importances.index,
+            orientation='h',
+            title='Predictive Importance: Factors Driving Partial Responses',
+            labels={'x': 'Importance Score', 'y': 'Feature'},
+            text_auto='.3f',
+            color=importances.values,
+            color_continuous_scale='Oranges'
+        )
+        
+        fig.update_traces(
+            hovertemplate='<b>%{y}</b><br>Importance: %{x:.4f}<extra></extra>'
+        )
+        
+        fig.update_layout(
+            coloraxis_showscale=False,
+            font=dict(size=11),
+            margin=dict(t=50, b=50, l=150, r=20)
+        )
+        
+        st.plotly_chart(fig, width='stretch')
         
     except Exception as e:
         st.markdown(f"<p style='text-align: center; color: #666;'>Model visualization unavailable</p>", unsafe_allow_html=True)
@@ -790,31 +856,26 @@ def chart_partial_prediction_model(filtered_df: pd.DataFrame):
 # TAB 2: SURVEY RESULTS GRAPHS
 # =============================================================================
 
-def chart_interest_personas(filtered_df: pd.DataFrame):
-    """Interest-Based Personas (Clustering) - Cell 3590"""
+def _get_clustering_data(filtered_df: pd.DataFrame):
+    """Helper function to perform clustering and return processed data."""
     info_cols = ['info_roles', 'info_career', 'info_comp', 'info_culture', 'info_process']
     
-    # Check required columns
     missing_cols = [col for col in info_cols if col not in filtered_df.columns]
     if missing_cols or 'subject' not in filtered_df.columns:
-        st.markdown(f"<p style='text-align: center; color: #666;'>Missing required columns</p>", unsafe_allow_html=True)
-        return
+        return None, "Missing required columns"
     
     clustering_data = filtered_df[info_cols + ['subject', 'attractiveness']].copy()
     clustering_data[info_cols] = clustering_data[info_cols].notnull().astype(int)
     clustering_clean = clustering_data.dropna(subset=['subject', 'attractiveness']).copy()
     
     if len(clustering_clean) < 3:
-        st.markdown(f"<p style='text-align: center; color: #666;'>Insufficient data for clustering</p>", unsafe_allow_html=True)
-        return
+        return None, "Insufficient data for clustering"
     
-    # Perform K-Means Clustering
     X_cluster = clustering_clean[info_cols].values
     kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
     clustering_clean.loc[:, 'persona'] = kmeans.fit_predict(X_cluster)
     cluster_centers = pd.DataFrame(kmeans.cluster_centers_, columns=info_cols)
     
-    # Create labels based on cluster centers
     interest_names = {
         'info_roles': 'Roles',
         'info_career': 'Career',
@@ -833,117 +894,233 @@ def chart_interest_personas(filtered_df: pd.DataFrame):
     persona_mapping = {i: persona_labels[i] for i in range(3)}
     clustering_clean.loc[:, 'persona_label'] = clustering_clean['persona'].map(persona_mapping)
     
-    # Create 2-subplot figure matching notebook
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5), dpi=100)
-    
-    # Left: Cluster centers heatmap
-    sns.heatmap(
-        cluster_centers.T,
-        annot=True,
-        fmt='.2f',
-        cmap='YlOrRd',
-        xticklabels=[persona_labels[i] for i in range(3)],
-        yticklabels=['Roles', 'Career', 'Compensation', 'Culture', 'Process'],
-        ax=axes[0],
-        cbar_kws={'label': 'Interest Intensity'},
-        annot_kws={'size': 10, 'weight': 'bold'}
-    )
-    axes[0].set_title('Interest-Based Personas: Cluster Profiles', fontsize=12, fontweight='bold')
-    axes[0].set_xlabel('Persona Type', fontsize=11)
-    axes[0].set_ylabel('Interest Categories', fontsize=11)
-    
-    # Right: Persona distribution
-    persona_counts = clustering_clean['persona_label'].value_counts()
-    colors_persona = ['#FF6B6B', '#4ECDC4', '#45B7D1']
-    axes[1].barh(persona_counts.index, persona_counts.values, color=colors_persona, edgecolor='black')
-    axes[1].set_title('Distribution of Interest-Based Personas', fontsize=12, fontweight='bold')
-    axes[1].set_xlabel('Number of Respondents', fontsize=11)
-    axes[1].set_ylabel('Persona Type', fontsize=11)
-    
-    for i, v in enumerate(persona_counts.values):
-        axes[1].text(v + 5, i, str(v), va='center', fontweight='bold', fontsize=10)
-    
-    plt.tight_layout()
-    st.pyplot(fig)
+    return clustering_clean, cluster_centers, persona_labels, interest_names
 
 
-def chart_motivation_drivers(filtered_df: pd.DataFrame):
-    """Motivation Drivers (Box Plot) - Cell 4481"""
-    if 'attractiveness' not in filtered_df.columns or 'motivation' not in filtered_df.columns:
+def plot_interest_personas_heatmap(filtered_df: pd.DataFrame):
+    """Interest-Based Personas: Cluster Profiles Heatmap"""
+    result = _get_clustering_data(filtered_df)
+    if result[0] is None:
+        st.markdown(f"<p style='text-align: center; color: #666;'>{result[1]}</p>", unsafe_allow_html=True)
         return
+    
+    clustering_clean, cluster_centers, persona_labels, interest_names = result
+    
+    # Prepare data for heatmap
+    cluster_centers_display = cluster_centers.copy()
+    cluster_centers_display.columns = [interest_names.get(c, c) for c in cluster_centers_display.columns]
+    cluster_centers_display.index = persona_labels
+    
+    fig = go.Figure()
+    fig.add_trace(
+        go.Heatmap(
+            z=cluster_centers_display.values,
+            x=cluster_centers_display.columns,
+            y=cluster_centers_display.index,
+            colorscale='YlOrRd',
+            text=np.round(cluster_centers_display.values, 2),
+            texttemplate='%{text}',
+            textfont=dict(size=12, color='black'),
+            hovertemplate='<b>%{y}</b><br>%{x}: %{z:.2f}<extra></extra>',
+            colorbar=dict(title='Interest Intensity')
+        )
+    )
+    
+    fig.update_layout(
+        title_text='Interest-Based Personas: Cluster Profiles',
+        height=450,
+        xaxis_title='Interest Categories',
+        yaxis_title='Persona Type',
+        showlegend=False,
+        font=dict(size=11),
+        margin=dict(t=60, b=50, l=20, r=20)
+    )
+    
+    st.plotly_chart(fig, width='stretch')
+
+
+def plot_interest_personas_distribution(filtered_df: pd.DataFrame):
+    """Interest-Based Personas: Distribution Bar Chart"""
+    result = _get_clustering_data(filtered_df)
+    if result[0] is None:
+        st.markdown(f"<p style='text-align: center; color: #666;'>{result[1]}</p>", unsafe_allow_html=True)
+        return
+    
+    clustering_clean, _, _, _ = result
+    
+    # Prepare data for bar chart
+    persona_counts = clustering_clean['persona_label'].value_counts().reset_index()
+    persona_counts.columns = ['Persona', 'Count']
+    
+    colors_persona = ['#FF6B6B', '#4ECDC4', '#45B7D1']
+    
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=persona_counts['Count'],
+            y=persona_counts['Persona'],
+            orientation='h',
+            marker_color=colors_persona[:len(persona_counts)],
+            text=persona_counts['Count'],
+            textposition='outside',
+            hovertemplate='<b>%{y}</b><br>Count: %{x}<extra></extra>'
+        )
+    )
+    
+    fig.update_layout(
+        title_text='Distribution of Interest-Based Personas',
+        height=450,
+        xaxis_title='Number of Respondents',
+        yaxis_title='Persona Type',
+        showlegend=False,
+        font=dict(size=11),
+        margin=dict(t=60, b=50, l=20, r=20)
+    )
+    
+    st.plotly_chart(fig, width='stretch')
+
+
+def chart_interest_personas(filtered_df: pd.DataFrame):
+    """Interest-Based Personas (Clustering) - Cell 3590"""
+    # This function is kept for backward compatibility
+    # New separate functions: plot_interest_personas_heatmap, plot_interest_personas_distribution
+    col1, col2 = st.columns(2)
+    with col1:
+        plot_interest_personas_heatmap(filtered_df)
+    with col2:
+        plot_interest_personas_distribution(filtered_df)
+
+
+def _get_motivation_data(filtered_df: pd.DataFrame):
+    """Helper function to prepare motivation data."""
+    if 'attractiveness' not in filtered_df.columns or 'motivation' not in filtered_df.columns:
+        return None, "Missing required columns"
     
     driver_data = filtered_df[(filtered_df['status'] == 'Complete') & 
                              (filtered_df['attractiveness'].notna()) & 
                              (filtered_df['motivation'].notna())].copy()
     
     if len(driver_data) == 0:
-        st.markdown("<p style='text-align: center; color: #666;'>No complete responses with motivation data</p>", unsafe_allow_html=True)
-        return
+        return None, "No complete responses with motivation data"
     
-    # Calculate average attractiveness by motivation
     motivation_attractiveness = driver_data.groupby('motivation')['attractiveness'].agg(['mean', 'count']).round(2)
     motivation_attractiveness = motivation_attractiveness.sort_values('mean', ascending=True)
     
-    # Get top motivations by count
     top_motivations = motivation_attractiveness.nlargest(8, 'count').index
     motivation_top = motivation_attractiveness[motivation_attractiveness.index.isin(top_motivations)]
     
-    # Create 2-subplot figure matching notebook
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6), dpi=100)
+    return driver_data, motivation_top
+
+
+def plot_motivation_bar(filtered_df: pd.DataFrame):
+    """Motivation Drivers: Average Attractiveness by Factor (Bar Chart)"""
+    result = _get_motivation_data(filtered_df)
+    if result[0] is None:
+        st.markdown(f"<p style='text-align: center; color: #666;'>{result[1]}</p>", unsafe_allow_html=True)
+        return
     
-    # Left: Bar chart with gradient colors (matching notebook: plt.cm.RdYlGn)
-    colors_gradient = plt.cm.RdYlGn(np.linspace(0.3, 0.9, len(motivation_top)))
-    bars = axes[0].barh(motivation_top.index, motivation_top['mean'], color=colors_gradient, edgecolor='black')
-    axes[0].set_xlabel('Average Attractiveness Rating (1-10)', fontsize=11)
-    axes[0].set_ylabel('Motivation Factor', fontsize=11)
-    axes[0].set_title('Average Attractiveness by Motivation Factor\n(Top 8 Most Common)', fontsize=12, fontweight='bold')
-    axes[0].set_xlim(0, 10)
-    axes[0].axvline(driver_data['attractiveness'].mean(), color='red', linestyle='--', linewidth=2, 
-                    label=f"Overall Mean: {driver_data['attractiveness'].mean():.2f}")
-    axes[0].legend()
+    driver_data, motivation_top = result
     
-    for i, (idx, row) in enumerate(motivation_top.iterrows()):
-        axes[0].text(row['mean'] + 0.1, i, f"{row['mean']:.2f}", va='center', fontweight='bold', fontsize=10)
+    colors_gradient = ['#1a9850', '#91cf60', '#d9ef8b', '#fee08b', '#fc8d59', '#d73027'][:len(motivation_top)]
     
-    # Right: Box plot showing distribution
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            y=motivation_top.index,
+            x=motivation_top['mean'],
+            orientation='h',
+            marker_color=colors_gradient,
+            text=np.round(motivation_top['mean'], 2),
+            textposition='outside',
+            hovertemplate='<b>%{y}</b><br>Avg Attractiveness: %{x:.2f}<br>Count: %{customdata}<extra>',
+            customdata=motivation_top['count'].values
+        )
+    )
+    
+    # Add vertical line for overall mean
+    overall_mean = driver_data['attractiveness'].mean()
+    fig.add_vline(x=overall_mean, line_dash='dash', line_color='red', line_width=2)
+    fig.add_annotation(x=overall_mean, y=len(motivation_top), text=f'Overall Mean: {overall_mean:.2f}',
+                      showarrow=True, arrowhead=2, yshift=10)
+    
+    fig.update_layout(
+        title_text='Average Attractiveness by Motivation Factor (Top 8)',
+        height=450,
+        xaxis_title='Average Attractiveness Rating (1-10)',
+        yaxis_title='Motivation Factor',
+        showlegend=False,
+        font=dict(size=10),
+        margin=dict(t=60, b=50, l=20, r=20),
+        xaxis=dict(range=[0, 10])
+    )
+    
+    st.plotly_chart(fig, width='stretch')
+
+
+def plot_motivation_box(filtered_df: pd.DataFrame):
+    """Motivation Drivers: Distribution of Ratings (Box Plot)"""
+    result = _get_motivation_data(filtered_df)
+    if result[0] is None:
+        st.markdown(f"<p style='text-align: center; color: #666;'>{result[1]}</p>", unsafe_allow_html=True)
+        return
+    
+    driver_data, motivation_top = result
+    
+    colors_gradient = ['#1a9850', '#91cf60', '#d9ef8b', '#fee08b', '#fc8d59', '#d73027'][:len(motivation_top)]
     motivation_list = motivation_top.index.tolist()
-    data_to_plot = [driver_data[driver_data['motivation'] == m]['attractiveness'].values 
-                    for m in motivation_list]
     
-    bp = axes[1].boxplot(data_to_plot, tick_labels=motivation_list, vert=False, patch_artist=True,
-                         showmeans=True, meanline=True)
+    fig = go.Figure()
     
-    for patch, color in zip(bp['boxes'], colors_gradient):
-        patch.set_facecolor(color)
-        patch.set_alpha(0.6)
+    for i, motivation in enumerate(motivation_list):
+        data = driver_data[driver_data['motivation'] == motivation]['attractiveness'].values
+        fig.add_trace(
+            go.Box(
+                x=data,
+                name=motivation,
+                orientation='h',
+                marker_color=colors_gradient[i % len(colors_gradient)],
+                boxmean=True,
+                hovertemplate='<b>%{name}</b><br>Min: %{min}<br>Q1: %{q1}<br>Median: %{median}<br>Q3: %{q3}<br>Max: %{max}<br>Mean: %{mean:.2f}<extra>'
+            )
+        )
     
-    axes[1].set_xlabel('Attractiveness Rating (1-10)', fontsize=11)
-    axes[1].set_ylabel('Motivation Factor', fontsize=11)
-    axes[1].set_title('Distribution of Attractiveness Ratings by Motivation Factor', fontsize=12, fontweight='bold')
-    axes[1].set_xlim(0, 10)
-    axes[1].grid(axis='x', alpha=0.3)
+    fig.update_layout(
+        title_text='Distribution of Attractiveness Ratings',
+        height=450,
+        xaxis_title='Attractiveness Rating (1-10)',
+        yaxis_title='Motivation Factor',
+        showlegend=False,
+        font=dict(size=10),
+        margin=dict(t=60, b=50, l=20, r=20),
+        xaxis=dict(range=[0, 10])
+    )
     
-    plt.tight_layout()
-    st.pyplot(fig)
+    st.plotly_chart(fig, width='stretch')
 
 
-def chart_information_gap_analysis(filtered_df: pd.DataFrame):
-    """Information Gap Analysis - Cell 4775"""
-    # Filter complete responses
+def chart_motivation_drivers(filtered_df: pd.DataFrame):
+    """Motivation Drivers (Box Plot) - Cell 4481"""
+    # This function is kept for backward compatibility
+    # New separate functions: plot_motivation_bar, plot_motivation_box
+    col1, col2 = st.columns(2)
+    with col1:
+        plot_motivation_bar(filtered_df)
+    with col2:
+        plot_motivation_box(filtered_df)
+
+
+def _get_gap_data(filtered_df: pd.DataFrame):
+    """Helper function to prepare gap analysis data."""
     gap_data = filtered_df[filtered_df['status'] == 'Complete'].copy()
     
     if len(gap_data) == 0:
-        st.markdown("<p style='text-align: center; color: #666;'>No complete responses to analyze</p>", unsafe_allow_html=True)
-        return
+        return None, "No complete responses to analyze"
     
-    # Calculate "Want to Learn" rates
     info_cols = ['info_roles', 'info_career', 'info_comp', 'info_culture', 'info_process']
     
-    # Check if columns exist
     missing_cols = [col for col in info_cols if col not in gap_data.columns]
     if missing_cols:
-        st.markdown(f"<p style='text-align: center; color: #666;'>Missing columns: {', '.join(missing_cols)}</p>", unsafe_allow_html=True)
-        return
+        return None, f"Missing columns: {', '.join(missing_cols)}"
     
     info_names = {
         'info_roles': 'Types of Roles',
@@ -958,14 +1135,11 @@ def chart_information_gap_analysis(filtered_df: pd.DataFrame):
         rate = (gap_data[col].notna().sum() / len(gap_data)) * 100
         info_interest_rates[info_names[col]] = rate
     
-    # Calculate "Motivation" rates
     if 'motivation' not in gap_data.columns:
-        st.markdown("<p style='text-align: center; color: #666;'>Missing motivation column</p>", unsafe_allow_html=True)
-        return
+        return None, "Missing motivation column"
     
     motivation_rates = (gap_data['motivation'].value_counts() / len(gap_data)) * 100
     
-    # Create mapping between similar concepts
     motivation_mapping = {
         'Compensation & Benefits': ['Competitive salary', 'Compensation and benefits', 
                                     'Sign-on bonus', 'Performance bonus'],
@@ -978,7 +1152,6 @@ def chart_information_gap_analysis(filtered_df: pd.DataFrame):
         'Application Process': ['Recruitment process', 'Interview process']
     }
     
-    # Calculate aggregated motivation rates
     aggregated_motivation = {}
     for category, keywords in motivation_mapping.items():
         total_rate = 0
@@ -987,90 +1160,159 @@ def chart_information_gap_analysis(filtered_df: pd.DataFrame):
             total_rate += matches.sum()
         aggregated_motivation[category] = total_rate
     
-    # Create comparison DataFrame
     gap_df = pd.DataFrame({
         'Want to Learn (%)': pd.Series(info_interest_rates),
         'Motivates to Apply (%)': pd.Series(aggregated_motivation)
     }).fillna(0)
     
-    gap_df['Gap (Curiosity - Motivation)'] = gap_df['Want to Learn (%)'] - gap_df['Motivates to Apply (%)']
-    gap_df = gap_df.sort_values('Gap (Curiosity - Motivation)', ascending=False)
+    gap_df['Gap'] = gap_df['Want to Learn (%)'] - gap_df['Motivates to Apply (%)']
+    gap_df = gap_df.sort_values('Gap', ascending=False)
     
     if len(gap_df) == 0:
+        return None, "Insufficient data for gap analysis"
+    
+    return gap_df
+
+
+def plot_information_gap_grouped(filtered_df: pd.DataFrame):
+    """Information Gap: Grouped Bar Chart (Side-by-Side)"""
+    gap_df = _get_gap_data(filtered_df)
+    if gap_df is None:
         st.markdown("<p style='text-align: center; color: #666;'>Insufficient data for gap analysis</p>", unsafe_allow_html=True)
         return
     
-    # Create 2-subplot figure
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6), dpi=100)
+    categories = gap_df.index.tolist()
+    x_pos = np.arange(len(categories))
     
-    # Left: Grouped bar chart
-    x = np.arange(len(gap_df.index))
-    width = 0.35
+    fig = go.Figure()
     
-    bars1 = axes[0].bar(x - width/2, gap_df['Want to Learn (%)'], width, 
-                        label='Want to Learn About', color='#3498DB', edgecolor='black')
-    bars2 = axes[0].bar(x + width/2, gap_df['Motivates to Apply (%)'], width, 
-                        label='Motivates to Apply', color='#E74C3C', edgecolor='black')
+    fig.add_trace(
+        go.Bar(
+            name='Want to Learn About',
+            x=x_pos - 0.175,
+            y=gap_df['Want to Learn (%)'],
+            width=0.35,
+            marker_color='#3498DB',
+            text=np.round(gap_df['Want to Learn (%)'], 1),
+            textposition='outside',
+            hovertemplate='<b>%{customdata}</b><br>Want to Learn: %{y:.1f}%<extra>',
+            customdata=categories
+        )
+    )
     
-    axes[0].set_xlabel('Category', fontsize=11)
-    axes[0].set_ylabel('Percentage (%)', fontsize=11)
-    axes[0].set_title('Information Curiosity vs Motivation Gap', fontsize=12, fontweight='bold')
-    axes[0].set_xticks(x)
-    axes[0].set_xticklabels(gap_df.index, rotation=30, ha='right', fontsize=9)
-    axes[0].legend(fontsize=9)
-    axes[0].grid(axis='y', alpha=0.3)
+    fig.add_trace(
+        go.Bar(
+            name='Motivates to Apply',
+            x=x_pos + 0.175,
+            y=gap_df['Motivates to Apply (%)'],
+            width=0.35,
+            marker_color='#E74C3C',
+            text=np.round(gap_df['Motivates to Apply (%)'], 1),
+            textposition='outside',
+            hovertemplate='<b>%{customdata}</b><br>Motivates: %{y:.1f}%<extra>',
+            customdata=categories
+        )
+    )
     
-    # Add value labels
-    for bars in [bars1, bars2]:
-        for bar in bars:
-            height = bar.get_height()
-            axes[0].text(bar.get_x() + bar.get_width()/2., height,
-                        f'{height:.1f}%', ha='center', va='bottom', fontsize=8)
+    fig.update_layout(
+        title_text='Information Curiosity vs Motivation Gap',
+        height=450,
+        xaxis_title='Category',
+        yaxis_title='Percentage (%)',
+        showlegend=True,
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
+        font=dict(size=10),
+        margin=dict(t=60, b=80, l=20, r=20),
+        xaxis=dict(tickvals=x_pos, ticktext=categories, tickangle=30, tickfont=dict(size=9))
+    )
     
-    # Right: Gap visualization (lollipop chart)
-    gap_sorted = gap_df.sort_values('Gap (Curiosity - Motivation)')
-    colors_gap = ['#27AE60' if x < 0 else '#E74C3C' for x in gap_sorted['Gap (Curiosity - Motivation)']]
+    st.plotly_chart(fig, width='stretch')
+
+
+def plot_information_gap_lollipop(filtered_df: pd.DataFrame):
+    """Information Gap: Lollipop Chart (Gap Visualization)"""
+    gap_df = _get_gap_data(filtered_df)
+    if gap_df is None:
+        st.markdown("<p style='text-align: center; color: #666;'>Insufficient data for gap analysis</p>", unsafe_allow_html=True)
+        return
     
-    y_positions = list(range(len(gap_sorted)))
-    axes[1].hlines(y=y_positions, xmin=0, xmax=gap_sorted['Gap (Curiosity - Motivation)'], 
-                   color=colors_gap, linewidth=3)
-    axes[1].scatter(gap_sorted['Gap (Curiosity - Motivation)'], y_positions, 
-                   color=colors_gap, s=100, zorder=3, edgecolor='black', linewidth=1.5)
+    gap_sorted = gap_df.sort_values('Gap')
+    colors_gap = ['#27AE60' if x < 0 else '#E74C3C' for x in gap_sorted['Gap']]
+    y_pos = np.arange(len(gap_sorted))
     
-    axes[1].axvline(0, color='black', linestyle='-', linewidth=1)
-    axes[1].set_yticks(y_positions)
-    axes[1].set_yticklabels(gap_sorted.index, fontsize=9)
-    axes[1].set_xlabel('Gap (Curiosity - Motivation) in pp', fontsize=11)
-    axes[1].set_title('Information Gap Analysis\n(Positive = More Curious Than Motivated)', fontsize=12, fontweight='bold')
-    axes[1].grid(axis='x', alpha=0.3)
+    fig = go.Figure()
     
-    # Add value labels
+    # Add horizontal lines for lollipop effect
     for i, (idx, row) in enumerate(gap_sorted.iterrows()):
-        gap_val = row['Gap (Curiosity - Motivation)']
-        axes[1].text(gap_val + (2 if gap_val > 0 else -2), i, f'{gap_val:+.1f}pp', 
-                    va='center', ha='left' if gap_val > 0 else 'right', 
-                    fontweight='bold', fontsize=9)
+        fig.add_trace(
+            go.Scatter(
+                x=[0, row['Gap']],
+                y=[i, i],
+                mode='lines',
+                line=dict(color=colors_gap[i], width=3),
+                showlegend=False,
+                hoverinfo='skip'
+            )
+        )
+    
+    # Add scatter points
+    fig.add_trace(
+        go.Scatter(
+            x=gap_sorted['Gap'],
+            y=y_pos,
+            mode='markers+text',
+            marker=dict(size=14, color=colors_gap, line=dict(color='black', width=1.5)),
+            text=[f'{v:+.1f}pp' for v in gap_sorted['Gap']],
+            textfont=dict(size=10, color=colors_gap),
+            hovertemplate='<b>%{customdata}</b><br>Gap: %{x:+.1f}pp<extra>',
+            customdata=gap_sorted.index
+        )
+    )
+    
+    # Add vertical line at 0
+    fig.add_vline(x=0, line_color='black', line_width=1)
     
     # Add annotations
-    axes[1].text(0.98, 0.02, '← More Motivation', 
-                transform=axes[1].transAxes, ha='right', va='bottom', 
-                fontsize=9, style='italic', color='#27AE60')
-    axes[1].text(0.02, 0.98, 'More Curiosity →', 
-                transform=axes[1].transAxes, ha='left', va='top', 
-                fontsize=9, style='italic', color='#E74C3C')
+    fig.add_annotation(x=0.98, y=0.02, xref='paper', yref='paper', text='← More Motivation',
+                      showarrow=False, font=dict(size=10, color='#27AE60'),
+                      xanchor='right', yanchor='bottom')
+    fig.add_annotation(x=0.02, y=0.98, xref='paper', yref='paper', text='More Curiosity →',
+                      showarrow=False, font=dict(size=10, color='#E74C3C'),
+                      xanchor='left', yanchor='top')
     
-    plt.tight_layout()
-    st.pyplot(fig)
+    fig.update_layout(
+        title_text='Gap Analysis (Positive = More Curious Than Motivated)',
+        height=450,
+        xaxis_title='Gap (Curiosity - Motivation) in pp',
+        yaxis_title='',
+        showlegend=False,
+        font=dict(size=10),
+        margin=dict(t=60, b=80, l=20, r=20),
+        xaxis=dict(range=[-50, 80]),
+        yaxis=dict(tickvals=y_pos, ticktext=gap_sorted.index, tickfont=dict(size=9))
+    )
+    
+    st.plotly_chart(fig, width='stretch')
 
 
-def chart_maturity_shift(filtered_df: pd.DataFrame):
-    """Maturity Shift (Year 1 → 4) - Cell 3827"""
+def chart_information_gap_analysis(filtered_df: pd.DataFrame):
+    """Information Gap Analysis - Cell 4775"""
+    # This function is kept for backward compatibility
+    # New separate functions: plot_information_gap_grouped, plot_information_gap_lollipop
+    col1, col2 = st.columns(2)
+    with col1:
+        plot_information_gap_grouped(filtered_df)
+    with col2:
+        plot_information_gap_lollipop(filtered_df)
+
+
+def _get_maturity_data(filtered_df: pd.DataFrame):
+    """Helper function to prepare maturity shift data."""
     maturity_data = filtered_df[(filtered_df['status'] == 'Complete') & 
                                  (filtered_df['year'].isin(['Year 1', 'Year 2', 'Year 3', 'Year 4']))].copy()
     
     if len(maturity_data) == 0:
-        st.markdown("<p style='text-align: center; color: #666;'>No complete responses with year data</p>", unsafe_allow_html=True)
-        return
+        return None, "No complete responses with year data"
     
     year_interests = {}
     for year in ['Year 1', 'Year 2', 'Year 3', 'Year 4']:
@@ -1084,30 +1326,93 @@ def chart_maturity_shift(filtered_df: pd.DataFrame):
         }
     
     year_interest_df = pd.DataFrame(year_interests).T
-    
-    # Create 2-subplot figure matching notebook
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5), dpi=100)
+    return year_interest_df
+
+
+def plot_maturity_line(filtered_df: pd.DataFrame):
+    """Maturity Shift: Line Chart (Evolution of Interests)"""
+    year_interest_df = _get_maturity_data(filtered_df)
+    if year_interest_df is None:
+        st.markdown("<p style='text-align: center; color: #666;'>No complete responses with year data</p>", unsafe_allow_html=True)
+        return
     
     key_categories = ['Culture', 'Process', 'Career', 'Compensation']
-    for category in key_categories:
-        axes[0].plot(year_interest_df.index, year_interest_df[category], 
-                     marker='o', linewidth=2.5, markersize=8, label=category)
+    colors_lines = ['#E74C3C', '#3498DB', '#2ECC71', '#9B59B6']
     
-    axes[0].set_title('Evolution of Interests: Year 1 to Year 4', fontsize=12, fontweight='bold')
-    axes[0].set_xlabel('Year of Study', fontsize=11)
-    axes[0].set_ylabel('Interest Rate (%)', fontsize=11)
-    axes[0].legend(title='Interest Category', loc='best')
-    axes[0].grid(True, alpha=0.3)
+    fig = go.Figure()
     
-    # Heatmap showing all interests by year
-    sns.heatmap(year_interest_df.T, annot=True, fmt='.1f', cmap='RdYlGn', 
-                ax=axes[1], cbar_kws={'label': 'Interest Rate (%)'})
-    axes[1].set_title('Interest Heatmap: Academic Progression', fontsize=12, fontweight='bold')
-    axes[1].set_xlabel('Year of Study', fontsize=11)
-    axes[1].set_ylabel('Interest Category', fontsize=11)
+    for i, category in enumerate(key_categories):
+        fig.add_trace(
+            go.Scatter(
+                x=year_interest_df.index,
+                y=year_interest_df[category],
+                mode='lines+markers',
+                name=category,
+                line=dict(width=3),
+                marker=dict(size=10),
+                hovertemplate=f'<b>{category}</b><br>Year: %{{x}}<br>Interest: %{{y:.1f}}%<extra>'
+            )
+        )
     
-    plt.tight_layout()
-    st.pyplot(fig)
+    fig.update_layout(
+        title_text='Evolution of Interests: Year 1 to Year 4',
+        height=450,
+        xaxis_title='Year of Study',
+        yaxis_title='Interest Rate (%)',
+        showlegend=True,
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
+        font=dict(size=11),
+        margin=dict(t=60, b=50, l=20, r=20)
+    )
+    
+    st.plotly_chart(fig, width='stretch')
+
+
+def plot_maturity_heatmap(filtered_df: pd.DataFrame):
+    """Maturity Shift: Heatmap (Academic Progression)"""
+    year_interest_df = _get_maturity_data(filtered_df)
+    if year_interest_df is None:
+        st.markdown("<p style='text-align: center; color: #666;'>No complete responses with year data</p>", unsafe_allow_html=True)
+        return
+    
+    fig = go.Figure()
+    
+    fig.add_trace(
+        go.Heatmap(
+            z=year_interest_df.T.values,
+            x=year_interest_df.index,
+            y=year_interest_df.columns,
+            colorscale='RdYlGn',
+            text=np.round(year_interest_df.T.values, 1),
+            texttemplate='%{text}',
+            textfont=dict(size=11, color='black'),
+            hovertemplate='<b>%{y}</b><br>Year: %{x}<br>Interest: %{z:.1f}%<extra>',
+            colorbar=dict(title='Interest Rate (%)')
+        )
+    )
+    
+    fig.update_layout(
+        title_text='Interest Heatmap: Academic Progression',
+        height=450,
+        xaxis_title='Year of Study',
+        yaxis_title='Interest Category',
+        showlegend=False,
+        font=dict(size=11),
+        margin=dict(t=60, b=50, l=20, r=20)
+    )
+    
+    st.plotly_chart(fig, width='stretch')
+
+
+def chart_maturity_shift(filtered_df: pd.DataFrame):
+    """Maturity Shift (Year 1 → 4) - Cell 3827"""
+    # This function is kept for backward compatibility
+    # New separate functions: plot_maturity_line, plot_maturity_heatmap
+    col1, col2 = st.columns(2)
+    with col1:
+        plot_maturity_line(filtered_df)
+    with col2:
+        plot_maturity_heatmap(filtered_df)
 
 
 def render_placeholders():
@@ -1638,22 +1943,70 @@ with tab_quality:
 
 # Tab 2: Survey Results
 with tab_results:
-    # Row 1: Interest-Based Personas & Motivation Drivers
-    row3_col1, row3_col2 = st.columns(2)
     
-    with row3_col1:
-        render_chart_card("📊 Interest-Based Personas", lambda: chart_interest_personas(filtered_df), insight_key="personas", card_height=500)
+    # Section 1: Interest-Based Personas (2 plots side-by-side)
+    st.markdown("### 📊 Interest-Based Personas")
+    col1, col2 = st.columns(2)
+    with col1:
+        plot_interest_personas_heatmap(filtered_df)
+    with col2:
+        plot_interest_personas_distribution(filtered_df)
     
-    with row3_col2:
-        render_chart_card("📊 Motivation Drivers", lambda: chart_motivation_drivers(filtered_df), insight_key="motivation", card_height=500)
+    # Insights for Interest-Based Personas
+    if "personas" in st.session_state.insights:
+        with st.expander("💡 View Insights", expanded=True):
+            st.markdown(st.session_state.insights["personas"])
+    else:
+        st.info("💡 Click '✨ Generate Insights' in sidebar to see AI-generated insights")
     
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # Row 2: Information Gap Analysis & Maturity Shift
-    row4_col1, row4_col2 = st.columns(2)
+    # Section 2: Motivation Drivers (2 plots side-by-side)
+    st.markdown("### 📊 Motivation Drivers")
+    col1, col2 = st.columns(2)
+    with col1:
+        plot_motivation_bar(filtered_df)
+    with col2:
+        plot_motivation_box(filtered_df)
     
-    with row4_col1:
-        render_chart_card("📊 Information Gap Analysis", lambda: chart_information_gap_analysis(filtered_df), insight_key="gap_analysis", card_height=500)
+    # Insights for Motivation Drivers
+    if "motivation" in st.session_state.insights:
+        with st.expander("💡 View Insights", expanded=True):
+            st.markdown(st.session_state.insights["motivation"])
+    else:
+        st.info("💡 Click '✨ Generate Insights' in sidebar to see AI-generated insights")
     
-    with row4_col2:
-        render_chart_card("📊 Maturity Shift (Year 1 → 4)", lambda: chart_maturity_shift(filtered_df), insight_key="maturity", card_height=500)
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # Section 3: Information Gap Analysis (2 plots side-by-side)
+    st.markdown("### 📊 Information Gap Analysis")
+    col1, col2 = st.columns(2)
+    with col1:
+        plot_information_gap_grouped(filtered_df)
+    with col2:
+        plot_information_gap_lollipop(filtered_df)
+    
+    # Insights for Information Gap Analysis
+    if "gap_analysis" in st.session_state.insights:
+        with st.expander("💡 View Insights", expanded=True):
+            st.markdown(st.session_state.insights["gap_analysis"])
+    else:
+        st.info("💡 Click '✨ Generate Insights' in sidebar to see AI-generated insights")
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # Section 4: Maturity Shift (2 plots side-by-side)
+    st.markdown("### 📊 Maturity Shift (Year 1 → 4)")
+    col1, col2 = st.columns(2)
+    with col1:
+        plot_maturity_line(filtered_df)
+    with col2:
+        plot_maturity_heatmap(filtered_df)
+    
+    # Insights for Maturity Shift
+    if "maturity" in st.session_state.insights:
+        with st.expander("💡 View Insights", expanded=True):
+            st.markdown(st.session_state.insights["maturity"])
+    else:
+        st.info("💡 Click '✨ Generate Insights' in sidebar to see AI-generated insights")
+
