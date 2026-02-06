@@ -406,19 +406,19 @@ INFORMATION INTERESTS:
 - info_other_text: free-text "other" interest
 
 TASK:
-- Answer user questions by analyzing `df`
-- Focus on survey quality, engagement, drop-offs, segmentation, and employer attractiveness
-- Prefer rates, distributions, comparisons, and patterns over raw counts
+- Answer user questions about the survey data
+- Provide text explanations, statistics, and insights
+- Only generate Python code and visualizations if the user EXPLICITLY asks for a chart, graph, or visualization
 
 OUTPUT RULES:
-- Output ONLY valid Python code
-- Do NOT include explanations outside code
-- Do NOT use markdown
-- If you generate a plot:
+- If user asks a question: respond with clear text explanations and statistics
+- If user asks for a visualization (e.g., "show me", "graph", "chart", "plot", "visualize"):
+    - Output ONLY valid Python code
+    - Do NOT include explanations outside code
+    - Do NOT use markdown
     - call plt.clf() before plotting
     - save the figure to 'temp_plot.png'
     - do NOT call plt.show()
-- Store the final explanation in: final_answer = "<clear explanation>"
 """
 
 
@@ -437,35 +437,48 @@ def run_analyst_agent(user_question: str, df) -> tuple:
     """Run the analyst agent with a user question."""
     llm, system_prompt = build_analyst_agent(df)
     
-    prompt = f"{system_prompt}\n\nUser question:\n{user_question}"
+    # Check if user is asking for a visualization
+    viz_keywords = ['show', 'chart', 'graph', 'plot', 'visualize', 'display', 'draw', 'create a', 'make a']
+    is_visualization_request = any(keyword in user_question.lower() for keyword in viz_keywords)
+    
+    if is_visualization_request:
+        prompt = f"{system_prompt}\n\nUser question:\n{user_question}"
+    else:
+        # For text-only questions, modify prompt to not expect code
+        text_prompt = system_prompt.replace("\nOUTPUT RULES:", "\nOUTPUT RULES:\n- For text questions: respond directly with explanations and statistics\n- For text questions: Do NOT generate code")
+        prompt = f"{text_prompt}\n\nUser question:\n{user_question}\n\nRespond with clear text explanation only (no code needed)."
     
     try:
         response = llm.invoke(prompt)
-        code = response.content
+        content = response.content
 
-        # Clean up code block markers
-        if code.startswith("```python"):
-            code = code.replace("```python", "").replace("```", "")
-        elif code.startswith("```"):
-            code = code.replace("```", "")
-        code = code.strip()
+        # Check if response contains code (```python or plt./sns./plot)
+        if "```python" in content or ("plt." in content and "save the figure" in content):
+            # Extract code
+            code = content
+            if "```python" in code:
+                code = code.split("```python")[1].split("```")[0]
+            code = code.strip()
 
-        local_vars = {"df": df.copy(), "pd": pd, "plt": plt, "sns": sns}
-        exec(code, {}, local_vars)
+            local_vars = {"df": df.copy(), "pd": pd, "plt": plt, "sns": sns}
+            exec(code, {}, local_vars)
 
-        final_answer = local_vars.get("final_answer", "Analysis completed.")
+            # Handle generated plot
+            image_path = None
+            if os.path.exists("temp_plot.png"):
+                unique_filename = f"chart_{uuid.uuid4().hex}.png"
+                os.rename("temp_plot.png", unique_filename)
+                image_path = unique_filename
 
-        # Handle generated plot
-        image_path = None
-        if os.path.exists("temp_plot.png"):
-            unique_filename = f"chart_{uuid.uuid4().hex}.png"
-            os.rename("temp_plot.png", unique_filename)
-            image_path = unique_filename
-
-        return final_answer, code, image_path
+            return code, image_path
+        else:
+            # No visualization code - return as plain text
+            # Clean up any markdown formatting
+            clean_text = content.replace("```", "").strip()
+            return clean_text, None
 
     except Exception as e:
-        return f"Error: {str(e)}", code if 'code' in locals() else "", None
+        return f"Error: {str(e)}", None
 
 
 # =============================================================================
@@ -1127,12 +1140,29 @@ def render_placeholders():
 
 def response_generator(prompt: str, df, response_key: str):
     """Stream AI response tokens."""
-    response, code, image_path = run_analyst_agent(prompt, df)
+    code, image_path = run_analyst_agent(prompt, df)
+    
+    # Check if response is an error or code
+    if "error" in code.lower() or code.startswith("Error:"):
+        response = code
+        code = None
+    else:
+        # Check if code block markers exist (indicates visualization code)
+        if "```python" in code or "plt." in code or "sns." in code or "plot(" in code:
+            response = "Here is the visualization based on your request:"
+        else:
+            # No visualization code - return as plain text response
+            response = code
+            code = None
+            image_path = None
+    
+    # Stream the response
     words = response.split()
     for word in words:
         yield word + " "
         time.sleep(0.02)
     
+    # Store code and image for display after streaming
     if "pending_code" not in st.session_state:
         st.session_state.pending_code = {}
     if "pending_image" not in st.session_state:
@@ -1204,9 +1234,15 @@ if df is None:
     st.error("Data file not found. Please ensure the Excel file is in the directory.")
     st.stop()
 
-# Get filter options
-all_schools = sorted(df['school'].dropna().unique()) if 'school' in df.columns else []
-all_years = sorted(df['year'].dropna().unique()) if 'year' in df.columns else []
+# Get filter options (include Unknown for NaN values)
+all_schools = list(df['school'].fillna('Unknown').unique())
+all_schools = sorted([s for s in all_schools if pd.notna(s) or s == 'Unknown'])
+all_years = list(df['year'].fillna('Unknown').unique())
+all_years = sorted([y for y in all_years if pd.notna(y) or y == 'Unknown'])
+
+# Replace 'Unknown' back to NaN in df for filtering
+df['school'] = df['school'].fillna('Unknown')
+df['year'] = df['year'].fillna('Unknown')
 
 # Initialize session state
 if 'school_selector' not in st.session_state:
