@@ -2,6 +2,7 @@
 GradSingapore Survey Analytics Dashboard
 ======================================
 A professional Streamlit dashboard for analyzing student survey data.
+Refactored to use LangChain agentic framework with memory.
 """
 
 # =============================================================================
@@ -13,6 +14,7 @@ import os
 import time
 import uuid
 from typing import Any
+from dataclasses import dataclass
 
 # Third-Party Imports
 import joblib
@@ -23,8 +25,9 @@ import seaborn as sns
 import plotly.graph_objects as go
 import plotly.express as px
 from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
+from langchain.agents import create_agent
+from langchain.tools import tool, ToolRuntime
+from langgraph.checkpoint.memory import InMemorySaver
 from sklearn.cluster import KMeans
 import streamlit as st
 
@@ -336,14 +339,6 @@ st.markdown(SAAS_CSS, unsafe_allow_html=True)
 # SESSION STATE
 # =============================================================================
 
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {
-            "role": "assistant",
-            "content": "Hello! I can help you analyze the survey data. Ask me about completion rates, specific schools, or attractiveness scores."
-        }
-    ]
-
 if "chat_open" not in st.session_state:
     st.session_state.chat_open = False
 
@@ -466,12 +461,24 @@ def reset_years():
 
 
 # =============================================================================
-# AI ANALYST
+# LANGCHAIN AGENT SETUP
 # =============================================================================
 
-SYSTEM_PROMPT = """You are a senior data analyst working on a student survey analytics platform (GradSingapore).
+# Define runtime context
+@dataclass
+class AnalystContext:
+    """Runtime context for the analyst agent."""
+    df: pd.DataFrame
+    filtered_schools: list[str]
+    filtered_years: list[str]
 
-You are given a pandas DataFrame named `df` that contains survey responses.
+
+# System prompt for the agent
+SYSTEM_PROMPT = """You are a senior data analyst working on GradSingapore's student survey analytics platform.
+
+You have access to a filtered DataFrame and tools to help analyze it.
+
+AVAILABLE DATA COLUMNS:
 
 CORE METADATA:
 - id: unique response ID
@@ -505,184 +512,159 @@ INFORMATION INTERESTS:
 - info_process: interest in application process
 - info_other_text: free-text "other" interest
 
-TASK:
-- Answer user questions about the survey data
-- Provide text explanations, statistics, and insights
-- Only generate Python code and visualizations if the user EXPLICITLY asks for a chart, graph, or visualization
+YOUR TOOLS:
 
-OUTPUT RULES:
-- If user asks a question: respond with clear text explanations and statistics
-- If user asks for a visualization (e.g., "show me", "graph", "chart", "plot", "visualize"):
-    - Output ONLY valid Python code
-    - Do NOT include explanations outside code
-    - Do NOT use markdown
-    - call plt.clf() before plotting
-    - save the figure to 'temp_plot.png'
-    - do NOT call plt.show()"""
+1. **get_survey_statistics**: Get basic statistics about the filtered data (counts, rates, averages)
+   - Use this when you need overall metrics
 
+2. **generate_visualization_code**: Generate Python code to create visualizations
+   - Use this when user asks for charts, graphs, plots, or visualizations
+   - Returns executable Python code that will be displayed and executed
 
-def get_llm():
-    """Get LLM instance for chat."""
-    return ChatOpenAI(
-        temperature=0,
-        model=st.secrets.get("MODEL_NAME", "glm-4.7"),
-        openai_api_key=st.secrets.get("OPENAI_API_KEY", "your-api-key"),
-        openai_api_base=st.secrets.get("OPENAI_API_BASE", "https://api.z.ai/api/paas/v4/"),
-    )
+GUIDELINES:
+- For simple questions: Use get_survey_statistics or answer from your knowledge
+- For specific data questions: Explain what analysis would help and guide the user
+- For visualizations: Always use generate_visualization_code tool
+- Be conversational and remember previous context
+- Consider the applied filters in your responses
+- When you generate code, explain what the visualization will show
+
+EXAMPLES:
+- "What's the completion rate?" → Use get_survey_statistics
+- "Show me a bar chart of schools" → Use generate_visualization_code
+- "How do Year 1 and Year 4 differ?" → Use get_survey_statistics, then explain patterns
+- "Plot attractiveness by motivation" → Use generate_visualization_code"""
 
 
-def build_chat_prompt():
-    """Build chat prompt template with conversation history."""
-    return ChatPromptTemplate.from_messages([
-        ("system", SYSTEM_PROMPT),
-        MessagesPlaceholder(variable_name="history", optional=True),
-        ("human", "{input}"),
-    ])
-
-
-def build_conversation_chain():
-    """Build conversation chain with message history support."""
-    llm = get_llm()
-    prompt = build_chat_prompt()
-    return prompt | llm
-
-
-def run_analyst_agent(user_question: str, df) -> tuple:
-    """Run the analyst agent with conversation memory."""
-    # Get conversation history from session_state
-    history: list[BaseMessage] = []
-    if "messages" in st.session_state:
-        for msg in st.session_state.messages:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role == "user":
-                history.append(HumanMessage(content=content))
-            elif role == "assistant":
-                history.append(AIMessage(content=content))
+# Define tools for the agent
+@tool
+def get_survey_statistics(runtime: ToolRuntime[AnalystContext]) -> str:
+    """Get basic statistics about the filtered survey data including counts, completion rates, and averages."""
+    df = runtime.context.df
     
-    # Build chain
-    chain = build_conversation_chain()
+    total = len(df)
+    if total == 0:
+        return "No data available with current filters."
     
-    # Categorize the question type
-    viz_keywords = ['show', 'chart', 'graph', 'plot', 'visualize', 'display', 'draw', 'create a', 'make a']
-    is_visualization_request = any(keyword in user_question.lower() for keyword in viz_keywords)
+    stats = {
+        'total_responses': total,
+        'complete': (df['status'] == 'Complete').sum(),
+        'partial': (df['status'] == 'Partial').sum(),
+        'disqualified': (df['status'] == 'Disqualified').sum(),
+        'completion_rate': f"{(df['status'] == 'Complete').mean() * 100:.1f}%",
+        'partial_rate': f"{(df['status'] == 'Partial').mean() * 100:.1f}%",
+    }
     
-    # Data calculation keywords - questions that need code execution
-    data_keywords = ['how many', 'how much', 'what percentage', 'what is the average', 
-                    'what is the total', 'count', 'sum', 'average', 'mean', 'median',
-                    'percentage', 'rate', 'number of', 'percentage of', 'breakdown by',
-                    'top', 'bottom', 'highest', 'lowest', 'distribution of', 'list all']
+    if 'attractiveness' in df.columns:
+        stats['avg_attractiveness'] = f"{df['attractiveness'].mean():.2f}"
+        stats['median_attractiveness'] = f"{df['attractiveness'].median():.1f}"
     
-    # Analysis/insights keywords - questions that need text analysis
-    analysis_keywords = ['recommend', 'suggestion', 'insight', 'analysis', 'why', 
-                        'reason', 'cause', 'pattern', 'trend', 'improve', 'reduce',
-                        'address', 'handle', 'deal with', 'strategies', 'approach']
+    if 'duration_sec' in df.columns:
+        stats['avg_duration_min'] = f"{df['duration_sec'].mean() / 60:.1f}"
     
-    question_lower = user_question.lower()
-    is_data_question = any(keyword in question_lower for keyword in data_keywords)
-    is_analysis_question = any(keyword in question_lower for keyword in analysis_keywords)
+    # Add filter context
+    filters_applied = runtime.context.filtered_schools or runtime.context.filtered_years
+    if filters_applied:
+        stats['filters'] = {
+            'schools': runtime.context.filtered_schools if runtime.context.filtered_schools else 'All',
+            'years': runtime.context.filtered_years if runtime.context.filtered_years else 'All'
+        }
     
-    # Priority: Visualization > Data Calculation > Analysis/Text
-    if is_visualization_request:
-        input_question = f"""IMPORTANT: Generate only Python visualization code. No markdown, no explanations outside code.
+    return str(stats)
 
-User question:
-{user_question}"""
-    elif is_data_question:
-        input_question = f"""IMPORTANT: Generate Python code to calculate the answer using the DataFrame `df`. 
-- Use `df` directly for calculations (e.g., `df['column'].mean()`, `df['column'].value_counts()`)
-- Use `print()` to output BOTH the numeric result AND a brief explanation.
-- Example: `print(f\"Partial response rate: {{partial_rate:.2f}}% - This means {{count}} out of {{total}} responses were not completed.\")`
-- Make your print statements informative and contextual.
-- No markdown, just code and printed output.
 
-User question:
-{user_question}"""
-    else:
-        # Analysis/recommendation questions - give text answers based on your knowledge
-        input_question = f"""As a data analyst, provide a helpful response based on the survey data structure. 
-You have access to a DataFrame `df` with columns including:
+@tool
+def generate_visualization_code(query: str, runtime: ToolRuntime[AnalystContext]) -> str:
+    """Generate Python code to create a visualization based on the user's query.
+    
+    This tool returns executable Python code that will create the requested visualization.
+    The code will be executed separately to generate the actual image.
+    
+    Args:
+        query: Description of what visualization to create
+    """
+    df = runtime.context.df
+    
+    # Context about the DataFrame
+    df_info = f"""
+The DataFrame 'df' is already available with these columns:
+{list(df.columns)}
+
+Key columns:
+- status: Complete, Partial, Disqualified
+- attractiveness: 1-10 scale
 - school, year, qualification, subject, nationality, gender
-- perception, attractiveness (1-10 scale)
-- status (Complete, Partial, Disqualified)
 - info_roles, info_career, info_comp, info_culture, info_process
-- motivation factors
+- motivation, perception
 
-Provide a thoughtful analysis or recommendation. If you need specific data to support your answer, you can mention what analysis would help.
-
-User question:
-{user_question}"""
+Sample data shape: {len(df)} rows
+"""
     
-    try:
-        response = chain.invoke({"input": input_question, "history": history})
-        content = response.content
+    # Use the LLM to generate visualization code
+    code_gen_llm = ChatOpenAI(
+        temperature=0,
+        model=st.secrets.get("MODEL_NAME", "gpt-4"),
+        openai_api_key=st.secrets.get("OPENAI_API_KEY", "your-api-key"),
+        openai_api_base=st.secrets.get("OPENAI_API_BASE", None),
+    )
+    
+    code_prompt = f"""{df_info}
 
-        # Check if response contains actual code (stricter detection)
-        import re
-        code_pattern = r"```python\s*|df\[|df\.|plt\.|sns\.|px\.|go\.|print\(|exec\(|\.groupby\(|\.value_counts\(|\.mean\(|\.sum\(|\.count\(|\.unique\("
-        has_code = bool(re.search(code_pattern, content))
-        
-        if has_code:
-            code = content
-            if "```python" in code:
-                code = code.split("```python")[1].split("```")[0]
-            code = code.strip()
+User wants: {query}
 
-            # Check if this is a visualization request
-            is_viz = any(keyword in code.lower() for keyword in ['plt.', 'px.', 'go.', 'plotly', 'sns.'])
-            
-            if is_viz:
-                # Visualization code - execute and save chart
-                local_vars = {"df": df.copy(), "pd": pd, "plt": plt, "sns": sns, "px": px, "go": go}
-                exec(code, {}, local_vars)
+Generate ONLY valid Python code to create this visualization. Requirements:
+1. Use matplotlib (plt), seaborn (sns), or plotly (px, go) 
+2. DataFrame is already available as 'df'
+3. Call plt.clf() before plotting if using matplotlib
+4. Save matplotlib figures to 'temp_plot.png' (use plt.savefig('temp_plot.png', dpi=100, bbox_inches='tight'))
+5. Do NOT call plt.show()
+6. For plotly, save with: fig.write_image('temp_plot.png', width=1000, height=600)
+7. Make the visualization clear and professional
+8. Add appropriate titles, labels, and legends
+9. Handle missing data appropriately
 
-                image_path = None
-                if os.path.exists("temp_plot.png"):
-                    unique_filename = f"chart_{uuid.uuid4().hex}.png"
-                    os.rename("temp_plot.png", unique_filename)
-                    image_path = unique_filename
+Return ONLY the Python code, no explanations, no markdown, no ```python``` tags."""
 
-                return code, image_path
-            else:
-                # Data calculation code - execute and capture output
-                local_vars = {"df": df.copy(), "pd": pd}
-                import io
-                import sys
-                old_stdout = sys.stdout
-                old_stderr = sys.stderr
-                sys.stdout = io.StringIO()
-                sys.stderr = io.StringIO()
-                
-                try:
-                    exec(code, {}, local_vars)
-                    output = sys.stdout.getvalue()
-                    sys.stdout = old_stdout
-                    sys.stderr = old_stderr
-                    
-                    # Format the output nicely
-                    if output.strip():
-                        result = f"{output.strip()}"
-                    else:
-                        # No output from code - fallback to clean text
-                        clean_text = content.replace("```", "").strip()
-                        # If still looks like code, return a simple response
-                        if "df" in content and len(content) < 100:
-                            result = "I couldn't calculate that. Please try rephrasing your question."
-                        else:
-                            result = clean_text
-                    return result, None
-                except Exception as e:
-                    sys.stdout = old_stdout
-                    sys.stderr = old_stderr
-                    # Fallback: return clean text on error
-                    clean_text = content.replace("```", "").strip()
-                    return clean_text, None
-        else:
-            # No code detected - return the LLM's response as-is
-            clean_text = content.replace("```", "").strip()
-            return clean_text, None
-    except Exception as e:
-        return f"Error: {str(e)}", None
+    code_response = code_gen_llm.invoke(code_prompt)
+    generated_code = code_response.content.strip()
+    
+    # Clean up any markdown formatting that might have slipped through
+    if "```python" in generated_code:
+        generated_code = generated_code.split("```python")[1].split("```")[0].strip()
+    elif "```" in generated_code:
+        generated_code = generated_code.split("```")[1].split("```")[0].strip()
+    
+    return generated_code
+
+
+# Initialize LangChain agent with memory
+@st.cache_resource
+def create_analyst_agent():
+    """Create and cache the LangChain agent with memory."""
+    # Initialize the model
+    model = ChatOpenAI(
+        temperature=0.3,
+        model=st.secrets.get("MODEL_NAME", "gpt-4"),
+        openai_api_key=st.secrets.get("OPENAI_API_KEY", "your-api-key"),
+        openai_api_base=st.secrets.get("OPENAI_API_BASE", None),
+    )
+    
+    # Set up memory
+    checkpointer = InMemorySaver()
+    
+    # Create agent with tools
+    agent = create_agent(
+        model=model,
+        system_prompt=SYSTEM_PROMPT,
+        tools=[
+            get_survey_statistics,
+            generate_visualization_code
+        ],
+        context_schema=AnalystContext,
+        checkpointer=checkpointer
+    )
+    
+    return agent
 
 
 # =============================================================================
@@ -802,7 +784,7 @@ def render_chart_card(title: str, chart_function, insight_key: str | None = None
 # =============================================================================
 
 def chart_status_distribution(filtered_df: pd.DataFrame):
-    """Status Distribution (Donut Chart) - Cell 2656"""
+    """Status Distribution (Donut Chart)"""
     if 'status' not in filtered_df.columns:
         return
     
@@ -839,7 +821,7 @@ def chart_status_distribution(filtered_df: pd.DataFrame):
 
 
 def chart_dropoff_analysis(filtered_df: pd.DataFrame):
-    """Drop-off Analysis (Bar Chart) - Cell 3432"""
+    """Drop-off Analysis (Bar Chart)"""
     if 'status' not in filtered_df.columns:
         return
     
@@ -921,7 +903,7 @@ def chart_dropoff_analysis(filtered_df: pd.DataFrame):
 
 
 def chart_question_correlation_heatmap(filtered_df: pd.DataFrame):
-    """Question Correlation Heatmap - Cell 2798"""
+    """Question Correlation Heatmap"""
     info_cols = ['info_roles', 'info_career', 'info_comp', 'info_culture', 'info_process']
     
     missing_cols = [col for col in info_cols if col not in filtered_df.columns]
@@ -961,11 +943,7 @@ def chart_question_correlation_heatmap(filtered_df: pd.DataFrame):
 
 
 def chart_partial_prediction_model(filtered_df: pd.DataFrame) -> None:
-    """Factors Driving Partial Survey Responses - Feature Importance.
-    
-    Args:
-        filtered_df: Filtered pandas DataFrame with survey response data.
-    """
+    """Factors Driving Partial Survey Responses - Feature Importance."""
     cached = load_ml_model()
     
     if cached is None:
@@ -1181,17 +1159,6 @@ def plot_interest_personas_distribution(filtered_df: pd.DataFrame):
     st.plotly_chart(fig, width='stretch')
 
 
-def chart_interest_personas(filtered_df: pd.DataFrame):
-    """Interest-Based Personas (Clustering) - Cell 3590"""
-    # This function is kept for backward compatibility
-    # New separate functions: plot_interest_personas_heatmap, plot_interest_personas_distribution
-    col1, col2 = st.columns(2)
-    with col1:
-        plot_interest_personas_heatmap(filtered_df)
-    with col2:
-        plot_interest_personas_distribution(filtered_df)
-
-
 def _get_motivation_data(filtered_df: pd.DataFrame):
     """Helper function to prepare motivation data."""
     if 'attractiveness' not in filtered_df.columns or 'motivation' not in filtered_df.columns:
@@ -1281,7 +1248,7 @@ def plot_motivation_box(filtered_df: pd.DataFrame):
                 orientation='h',
                 marker_color=colors_gradient[i % len(colors_gradient)],
                 boxmean=True,
-                hovertemplate='<b>%{name}</b><br>Min: %{min}<br>Q1: %{q1}<br>Median: %{median}<br>Q3: %{q3}<br>Max: %{max}<br>Mean: %{mean:.2f}<extra>'
+                hovertemplate='<b>%{fullData.name}</b><br>Min: %{min}<br>Q1: %{q1}<br>Median: %{median}<br>Q3: %{q3}<br>Max: %{max}<extra>'
             )
         )
     
@@ -1297,17 +1264,6 @@ def plot_motivation_box(filtered_df: pd.DataFrame):
     )
     
     st.plotly_chart(fig, width='stretch')
-
-
-def chart_motivation_drivers(filtered_df: pd.DataFrame):
-    """Motivation Drivers (Box Plot) - Cell 4481"""
-    # This function is kept for backward compatibility
-    # New separate functions: plot_motivation_bar, plot_motivation_box
-    col1, col2 = st.columns(2)
-    with col1:
-        plot_motivation_bar(filtered_df)
-    with col2:
-        plot_motivation_box(filtered_df)
 
 
 def _get_gap_data(filtered_df: pd.DataFrame):
@@ -1496,26 +1452,8 @@ def plot_information_gap_lollipop(filtered_df: pd.DataFrame):
     st.plotly_chart(fig, width='stretch')
 
 
-def chart_information_gap_analysis(filtered_df: pd.DataFrame):
-    """Information Gap Analysis - Cell 4775"""
-    # This function is kept for backward compatibility
-    # New separate functions: plot_information_gap_grouped, plot_information_gap_lollipop
-    col1, col2 = st.columns(2)
-    with col1:
-        plot_information_gap_grouped(filtered_df)
-    with col2:
-        plot_information_gap_lollipop(filtered_df)
-
-
 def _get_maturity_data(filtered_df: pd.DataFrame) -> pd.DataFrame | None:
-    """Helper function to prepare maturity shift data.
-    
-    Args:
-        filtered_df: Filtered pandas DataFrame with survey data.
-        
-    Returns:
-        pd.DataFrame | None: DataFrame with interest rates by year, or None if no data.
-    """
+    """Helper function to prepare maturity shift data."""
     maturity_data = filtered_df[(filtered_df['status'] == 'Complete') & 
                                  (filtered_df['year'].isin(['Year 1', 'Year 2', 'Year 3', 'Year 4']))].copy()
     
@@ -1613,127 +1551,143 @@ def plot_maturity_heatmap(filtered_df: pd.DataFrame):
     st.plotly_chart(fig, width='stretch')
 
 
-def chart_maturity_shift(filtered_df: pd.DataFrame):
-    """Maturity Shift (Year 1 → 4) - Cell 3827"""
-    # This function is kept for backward compatibility
-    # New separate functions: plot_maturity_line, plot_maturity_heatmap
-    col1, col2 = st.columns(2)
-    with col1:
-        plot_maturity_line(filtered_df)
-    with col2:
-        plot_maturity_heatmap(filtered_df)
-
-
-def render_placeholders():
-    """Render placeholder cards for future visualizations."""
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown("<h3 class='section-title'>🔮 Future Visualizations</h3>", unsafe_allow_html=True)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("""
-        <div class='placeholder-card'>
-            <h4>➕ Add New Visualization</h4>
-            <p>Drag and drop or click to add</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown("""
-        <div class='placeholder-card'>
-            <h4>➕ Add New Visualization</h4>
-            <p>Drag and drop or click to add</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-
 # =============================================================================
-# AI CHAT MODAL
+# AI CHAT MODAL (using LangChain Agent)
 # =============================================================================
-
-def response_generator(prompt: str, df, response_key: str):
-    """Stream AI response tokens with conversation memory."""
-    code, image_path = run_analyst_agent(prompt, df)
-    
-    # Check if response is an error or code
-    if "error" in code.lower() or code.startswith("Error:"):
-        response = code
-        code = None
-    else:
-        # Check if code block markers exist (indicates visualization code)
-        if "```python" in code or "plt." in code or "sns." in code or "plot(" in code:
-            response = "Here is the visualization based on your request:"
-        else:
-            # No visualization code - return as plain text response
-            response = code
-            code = None
-            image_path = None
-    
-    # Stream the response
-    words = response.split()
-    for word in words:
-        yield word + " "
-        time.sleep(0.02)
-    
-    # Store code and image for display after streaming
-    if "pending_code" not in st.session_state:
-        st.session_state.pending_code = {}
-    if "pending_image" not in st.session_state:
-        st.session_state.pending_image = {}
-    
-    st.session_state.pending_code[response_key] = code
-    st.session_state.pending_image[response_key] = image_path
-
 
 @st.dialog("🤖 AI Assistant")
 def show_chat_modal():
-    """Display the AI chat modal."""
-    chat_container = st.container()
+    """Display the AI chat modal with LangChain agent."""
+    
+    # Initialize session state for messages if not exists
+    if "agent_messages" not in st.session_state:
+        st.session_state.agent_messages = []
     
     # Display chat history
+    chat_container = st.container()
     with chat_container:
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.write(message["content"])
+        for msg in st.session_state.agent_messages:
+            with st.chat_message(msg["role"]):
+                st.write(msg["content"])
                 
-                if "image" in message and message["image"] and os.path.exists(message["image"]):
-                    with open(message["image"], "rb") as f:
-                        st.image(f.read())
-                
-                if "code" in message and message["code"]:
+                # Display generated code if present
+                if "code" in msg and msg["code"]:
                     with st.expander("🛠️ View Generated Code"):
-                        st.code(message["code"], language="python")
+                        st.code(msg["code"], language="python")
+                
+                # Display image if present
+                if "image" in msg and msg["image"] and os.path.exists(msg["image"]):
+                    st.image(msg["image"])
     
-    # Accept user input
-    if prompt := st.chat_input("What would you like to know?"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
+    # Chat input
+    if prompt := st.chat_input("What would you like to know about the survey data?"):
+        # Add user message to history
+        st.session_state.agent_messages.append({"role": "user", "content": prompt})
         
         with chat_container:
+            # Display user message
             with st.chat_message("user"):
                 st.markdown(prompt)
             
+            # Display assistant response
             with st.chat_message("assistant"):
-                response_key = str(int(time.time() * 1000))
-                
-                with st.spinner("Analyzing data..."):
-                    response = st.write_stream(response_generator(prompt, filtered_df, response_key))
+                with st.spinner("Analyzing..."):
+                    # Get the agent
+                    agent = create_analyst_agent()
                     
-                    code = st.session_state.pending_code.get(response_key)
-                    image_path = st.session_state.pending_image.get(response_key)
+                    # Create context
+                    context = AnalystContext(
+                        df=filtered_df,
+                        filtered_schools=st.session_state.get('school_selector', []),
+                        filtered_years=st.session_state.get('year_selector', [])
+                    )
                     
-                    if image_path and os.path.exists(image_path):
-                        with open(image_path, "rb") as f:
-                            st.image(f.read())
+                    # Get or create thread_id for this session
+                    if "thread_id" not in st.session_state:
+                        st.session_state.thread_id = str(uuid.uuid4())
                     
-                    if code:
-                        with st.expander("🛠️ View Generated Code"):
-                            st.code(code, language="python")
-                
-                message_data = {"role": "assistant", "content": response, "code": code}
-                if image_path:
-                    message_data["image"] = image_path
-                st.session_state.messages.append(message_data)
+                    config = {"configurable": {"thread_id": st.session_state.thread_id}}
+                    
+                    try:
+                        # Invoke the agent
+                        response = agent.invoke(
+                            {"messages": [{"role": "user", "content": prompt}]},
+                            config=config,
+                            context=context
+                        )
+                        
+                        # Extract the assistant's response and check for tool calls
+                        assistant_message = None
+                        generated_code = None
+                        
+                        if "messages" in response:
+                            for msg in response["messages"]:
+                                # Check for tool results (the generated code)
+                                if hasattr(msg, 'type') and msg.type == 'tool':
+                                    if hasattr(msg, 'content') and msg.content:
+                                        # This might be the generated code
+                                        potential_code = msg.content
+                                        if potential_code and ('plt.' in potential_code or 'fig' in potential_code or 
+                                                              'px.' in potential_code or 'sns.' in potential_code or
+                                                              'go.' in potential_code or 'import' in potential_code):
+                                            generated_code = potential_code
+                                
+                                # Get the final assistant message
+                                if hasattr(msg, 'content') and msg.content and hasattr(msg, 'type') and msg.type != 'tool':
+                                    assistant_message = msg.content
+                        
+                        if not assistant_message:
+                            assistant_message = "I apologize, but I couldn't generate a response. Please try rephrasing your question."
+                        
+                        # Display the response
+                        st.write(assistant_message)
+                        
+                        # Execute generated code if present
+                        image_path = None
+                        if generated_code:
+                            with st.expander("🛠️ View Generated Code"):
+                                st.code(generated_code, language="python")
+                            
+                            # Execute the code
+                            try:
+                                # Prepare execution environment
+                                exec_globals = {
+                                    'df': filtered_df.copy(),
+                                    'pd': pd,
+                                    'plt': plt,
+                                    'sns': sns,
+                                    'px': px,
+                                    'go': go,
+                                    'np': np
+                                }
+                                
+                                # Execute the code
+                                exec(generated_code, exec_globals)
+                                
+                                # Check if temp_plot.png was created
+                                if os.path.exists('temp_plot.png'):
+                                    # Rename to unique filename
+                                    unique_filename = f"viz_{uuid.uuid4().hex}.png"
+                                    os.rename('temp_plot.png', unique_filename)
+                                    image_path = unique_filename
+                                    st.image(image_path)
+                                
+                            except Exception as e:
+                                st.error(f"Error executing visualization code: {str(e)}")
+                        
+                        # Add to message history
+                        msg_data = {"role": "assistant", "content": assistant_message}
+                        if generated_code:
+                            msg_data["code"] = generated_code
+                        if image_path:
+                            msg_data["image"] = image_path
+                        st.session_state.agent_messages.append(msg_data)
+                        
+                    except Exception as e:
+                        error_msg = f"I encountered an error: {str(e)}"
+                        st.error(error_msg)
+                        st.session_state.agent_messages.append({"role": "assistant", "content": error_msg})
+        
         st.rerun()
 
 
@@ -1782,13 +1736,17 @@ filtered_df = working_df[mask]
 # Render sidebar metrics
 render_sidebar_metrics(len(working_df), len(filtered_df))
 
-# Generate insights
+# Generate insights using direct LLM calls (not agent tools)
 if gen_insights and not filtered_df.empty:
-    # Close chat modal if open
     st.session_state.chat_open = False
     
     with st.spinner("Generating insights for all graphs..."):
-        llm = get_llm()
+        llm = ChatOpenAI(
+            temperature=0,
+            model=st.secrets.get("MODEL_NAME", "gpt-4"),
+            openai_api_key=st.secrets.get("OPENAI_API_KEY", "your-api-key"),
+            openai_api_base=st.secrets.get("OPENAI_API_BASE", None),
+        )
         
         # Filter context for all prompts
         filter_context = f"""
