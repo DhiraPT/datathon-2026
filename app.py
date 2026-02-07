@@ -23,6 +23,8 @@ import seaborn as sns
 import plotly.graph_objects as go
 import plotly.express as px
 from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from sklearn.cluster import KMeans
 import streamlit as st
 
@@ -467,8 +469,7 @@ def reset_years():
 # AI ANALYST
 # =============================================================================
 
-SYSTEM_PROMPT = """
-You are a senior data analyst working on a student survey analytics platform (GradSingapore).
+SYSTEM_PROMPT = """You are a senior data analyst working on a student survey analytics platform (GradSingapore).
 
 You are given a pandas DataFrame named `df` that contains survey responses.
 
@@ -517,43 +518,73 @@ OUTPUT RULES:
     - Do NOT use markdown
     - call plt.clf() before plotting
     - save the figure to 'temp_plot.png'
-    - do NOT call plt.show()
-"""
+    - do NOT call plt.show()"""
 
 
-def build_analyst_agent(df):
-    """Build the LLM analyst agent."""
-    llm = ChatOpenAI(
+def get_llm():
+    """Get LLM instance for chat."""
+    return ChatOpenAI(
         temperature=0,
         model=st.secrets.get("MODEL_NAME", "glm-4.7"),
         openai_api_key=st.secrets.get("OPENAI_API_KEY", "your-api-key"),
         openai_api_base=st.secrets.get("OPENAI_API_BASE", "https://api.z.ai/api/paas/v4/"),
     )
-    return llm, SYSTEM_PROMPT
+
+
+def build_chat_prompt():
+    """Build chat prompt template with conversation history."""
+    return ChatPromptTemplate.from_messages([
+        ("system", SYSTEM_PROMPT),
+        MessagesPlaceholder(variable_name="history", optional=True),
+        ("human", "{input}"),
+    ])
+
+
+def build_conversation_chain():
+    """Build conversation chain with message history support."""
+    llm = get_llm()
+    prompt = build_chat_prompt()
+    return prompt | llm
 
 
 def run_analyst_agent(user_question: str, df) -> tuple:
-    """Run the analyst agent with a user question."""
-    llm, system_prompt = build_analyst_agent(df)
+    """Run the analyst agent with conversation memory."""
+    # Get conversation history from session_state
+    history: list[BaseMessage] = []
+    if "messages" in st.session_state:
+        for msg in st.session_state.messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role == "user":
+                history.append(HumanMessage(content=content))
+            elif role == "assistant":
+                history.append(AIMessage(content=content))
+    
+    # Build chain
+    chain = build_conversation_chain()
     
     # Check if user is asking for a visualization
     viz_keywords = ['show', 'chart', 'graph', 'plot', 'visualize', 'display', 'draw', 'create a', 'make a']
     is_visualization_request = any(keyword in user_question.lower() for keyword in viz_keywords)
     
+    # Add instruction for visualization vs text
     if is_visualization_request:
-        prompt = f"{system_prompt}\n\nUser question:\n{user_question}"
+        input_question = f"""IMPORTANT: Generate only Python visualization code. No markdown, no explanations.
+
+User question:
+{user_question}"""
     else:
-        # For text-only questions, modify prompt to not expect code
-        text_prompt = system_prompt.replace("\nOUTPUT RULES:", "\nOUTPUT RULES:\n- For text questions: respond directly with explanations and statistics\n- For text questions: Do NOT generate code")
-        prompt = f"{text_prompt}\n\nUser question:\n{user_question}\n\nRespond with clear text explanation only (no code needed)."
+        input_question = f"""Respond with clear text explanation only. Do not generate code.
+
+User question:
+{user_question}"""
     
     try:
-        response = llm.invoke(prompt)
+        response = chain.invoke({"input": input_question, "history": history})
         content = response.content
 
-        # Check if response contains code (```python or plt./sns./plot)
+        # Check if response contains code
         if "```python" in content or ("plt." in content and ("savefig" in content or "save('" in content or 'save("' in content or ".png" in content or ".jpg" in content)):
-            # Extract code
             code = content
             if "```python" in code:
                 code = code.split("```python")[1].split("```")[0]
@@ -562,7 +593,6 @@ def run_analyst_agent(user_question: str, df) -> tuple:
             local_vars = {"df": df.copy(), "pd": pd, "plt": plt, "sns": sns}
             exec(code, {}, local_vars)
 
-            # Handle generated plot
             image_path = None
             if os.path.exists("temp_plot.png"):
                 unique_filename = f"chart_{uuid.uuid4().hex}.png"
@@ -571,11 +601,8 @@ def run_analyst_agent(user_question: str, df) -> tuple:
 
             return code, image_path
         else:
-            # No visualization code - return as plain text
-            # Clean up any markdown formatting
             clean_text = content.replace("```", "").strip()
             return clean_text, None
-
     except Exception as e:
         return f"Error: {str(e)}", None
 
@@ -1548,7 +1575,7 @@ def render_placeholders():
 # =============================================================================
 
 def response_generator(prompt: str, df, response_key: str):
-    """Stream AI response tokens."""
+    """Stream AI response tokens with conversation memory."""
     code, image_path = run_analyst_agent(prompt, df)
     
     # Check if response is an error or code
@@ -1683,7 +1710,7 @@ if gen_insights and not filtered_df.empty:
     st.session_state.chat_open = False
     
     with st.spinner("Generating insights for all graphs..."):
-        llm, _ = build_analyst_agent(filtered_df)
+        llm = get_llm()
         
         # Filter context for all prompts
         filter_context = f"""
