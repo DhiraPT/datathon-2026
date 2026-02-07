@@ -563,18 +563,52 @@ def run_analyst_agent(user_question: str, df) -> tuple:
     # Build chain
     chain = build_conversation_chain()
     
-    # Check if user is asking for a visualization
+    # Categorize the question type
     viz_keywords = ['show', 'chart', 'graph', 'plot', 'visualize', 'display', 'draw', 'create a', 'make a']
     is_visualization_request = any(keyword in user_question.lower() for keyword in viz_keywords)
     
-    # Add instruction for visualization vs text
+    # Data calculation keywords - questions that need code execution
+    data_keywords = ['how many', 'how much', 'what percentage', 'what is the average', 
+                    'what is the total', 'count', 'sum', 'average', 'mean', 'median',
+                    'percentage', 'rate', 'number of', 'percentage of', 'breakdown by',
+                    'top', 'bottom', 'highest', 'lowest', 'distribution of', 'list all']
+    
+    # Analysis/insights keywords - questions that need text analysis
+    analysis_keywords = ['recommend', 'suggestion', 'insight', 'analysis', 'why', 
+                        'reason', 'cause', 'pattern', 'trend', 'improve', 'reduce',
+                        'address', 'handle', 'deal with', 'strategies', 'approach']
+    
+    question_lower = user_question.lower()
+    is_data_question = any(keyword in question_lower for keyword in data_keywords)
+    is_analysis_question = any(keyword in question_lower for keyword in analysis_keywords)
+    
+    # Priority: Visualization > Data Calculation > Analysis/Text
     if is_visualization_request:
-        input_question = f"""IMPORTANT: Generate only Python visualization code. No markdown, no explanations.
+        input_question = f"""IMPORTANT: Generate only Python visualization code. No markdown, no explanations outside code.
+
+User question:
+{user_question}"""
+    elif is_data_question:
+        input_question = f"""IMPORTANT: Generate Python code to calculate the answer using the DataFrame `df`. 
+- Use `df` directly for calculations (e.g., `df['column'].mean()`, `df['column'].value_counts()`)
+- Use `print()` to output BOTH the numeric result AND a brief explanation.
+- Example: `print(f\"Partial response rate: {{partial_rate:.2f}}% - This means {{count}} out of {{total}} responses were not completed.\")`
+- Make your print statements informative and contextual.
+- No markdown, just code and printed output.
 
 User question:
 {user_question}"""
     else:
-        input_question = f"""Respond with clear text explanation only. Do not generate code.
+        # Analysis/recommendation questions - give text answers based on your knowledge
+        input_question = f"""As a data analyst, provide a helpful response based on the survey data structure. 
+You have access to a DataFrame `df` with columns including:
+- school, year, qualification, subject, nationality, gender
+- perception, attractiveness (1-10 scale)
+- status (Complete, Partial, Disqualified)
+- info_roles, info_career, info_comp, info_culture, info_process
+- motivation factors
+
+Provide a thoughtful analysis or recommendation. If you need specific data to support your answer, you can mention what analysis would help.
 
 User question:
 {user_question}"""
@@ -583,24 +617,68 @@ User question:
         response = chain.invoke({"input": input_question, "history": history})
         content = response.content
 
-        # Check if response contains code
-        if "```python" in content or ("plt." in content and ("savefig" in content or "save('" in content or 'save("' in content or ".png" in content or ".jpg" in content)):
+        # Check if response contains actual code (stricter detection)
+        import re
+        code_pattern = r"```python\s*|df\[|df\.|plt\.|sns\.|px\.|go\.|print\(|exec\(|\.groupby\(|\.value_counts\(|\.mean\(|\.sum\(|\.count\(|\.unique\("
+        has_code = bool(re.search(code_pattern, content))
+        
+        if has_code:
             code = content
             if "```python" in code:
                 code = code.split("```python")[1].split("```")[0]
             code = code.strip()
 
-            local_vars = {"df": df.copy(), "pd": pd, "plt": plt, "sns": sns}
-            exec(code, {}, local_vars)
+            # Check if this is a visualization request
+            is_viz = any(keyword in code.lower() for keyword in ['plt.', 'px.', 'go.', 'plotly', 'sns.'])
+            
+            if is_viz:
+                # Visualization code - execute and save chart
+                local_vars = {"df": df.copy(), "pd": pd, "plt": plt, "sns": sns, "px": px, "go": go}
+                exec(code, {}, local_vars)
 
-            image_path = None
-            if os.path.exists("temp_plot.png"):
-                unique_filename = f"chart_{uuid.uuid4().hex}.png"
-                os.rename("temp_plot.png", unique_filename)
-                image_path = unique_filename
+                image_path = None
+                if os.path.exists("temp_plot.png"):
+                    unique_filename = f"chart_{uuid.uuid4().hex}.png"
+                    os.rename("temp_plot.png", unique_filename)
+                    image_path = unique_filename
 
-            return code, image_path
+                return code, image_path
+            else:
+                # Data calculation code - execute and capture output
+                local_vars = {"df": df.copy(), "pd": pd}
+                import io
+                import sys
+                old_stdout = sys.stdout
+                old_stderr = sys.stderr
+                sys.stdout = io.StringIO()
+                sys.stderr = io.StringIO()
+                
+                try:
+                    exec(code, {}, local_vars)
+                    output = sys.stdout.getvalue()
+                    sys.stdout = old_stdout
+                    sys.stderr = old_stderr
+                    
+                    # Format the output nicely
+                    if output.strip():
+                        result = f"{output.strip()}"
+                    else:
+                        # No output from code - fallback to clean text
+                        clean_text = content.replace("```", "").strip()
+                        # If still looks like code, return a simple response
+                        if "df" in content and len(content) < 100:
+                            result = "I couldn't calculate that. Please try rephrasing your question."
+                        else:
+                            result = clean_text
+                    return result, None
+                except Exception as e:
+                    sys.stdout = old_stdout
+                    sys.stderr = old_stderr
+                    # Fallback: return clean text on error
+                    clean_text = content.replace("```", "").strip()
+                    return clean_text, None
         else:
+            # No code detected - return the LLM's response as-is
             clean_text = content.replace("```", "").strip()
             return clean_text, None
     except Exception as e:
